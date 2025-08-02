@@ -1,26 +1,23 @@
 import { Module } from '@nestjs/common';
-<<<<<<< HEAD
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
-
-@Module({
-  imports: [],
-  controllers: [AppController],
-  providers: [AppService],
-=======
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
 import { GatewayController } from './gateway.controller';
 import { GatewayService } from './gateway.service';
 import { UserService } from './user/user.service';
+import { AuthModule } from './auth/auth.module';
+import { KafkaModule } from './kafka/kafka.modul';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }), // ใช้ .env ได้ทุกที่
+    ConfigModule.forRoot({ 
+      isGlobal: true,
+      envFilePath: '.env',
+    }),
     HttpModule,
+    AuthModule,
+    KafkaModule,
   ],
   controllers: [GatewayController],
   providers: [GatewayService, UserService],
->>>>>>> e9c5035 (API Gateway)
 })
 export class AppModule {}

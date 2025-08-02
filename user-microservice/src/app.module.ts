@@ -2,15 +2,12 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
-// Kafka Module (NEW)
-import { KafkaModule } from '../../libs/common/src/kafka/kafka.module';
+// Kafka Module
+import { KafkaModule } from './libs/common/kafka/kafka.module';
 
-// Existing Modules
-import { AuthModule } from './auth/auth.module';
+// Feature Modules
 import { UserModule } from './users/users.module';
-import { MasterRoleModule } from './master_role/master_role.module';
 import { UserAllowRoleModule } from './users_allow_role/users_allow_role.module';
-import { PermissionModule } from './permission/permission.module';
 
 // Entities
 import { Users } from './users/entities/user.entity';
@@ -33,22 +30,22 @@ import { UsersAllowRole } from './users_allow_role/entities/users_allow_role.ent
         username: configService.get('DB_USERNAME'),
         password: configService.get('DB_PASSWORD'),
         database: configService.get('DB_DATABASE'),
-        // entities ที่แต่ละ service ใช้ (service ไหนใช้ entity ไหนก็ import เฉพาะอันนั้น)
+        entities: [Users, MasterRole, UsersAllowRole],
         synchronize: configService.get('NODE_ENV') !== 'production',
         logging: configService.get('NODE_ENV') === 'development',
+        dropSchema: false,
+        migrationsRun: false,
+        ssl: configService.get('NODE_ENV') === 'production' ? { rejectUnauthorized: false } : false,
       }),
       inject: [ConfigService],
     }),
 
-    // Add Kafka Module
+    // Kafka for event-driven communication
     KafkaModule,
     
-    // Existing Modules
-    AuthModule,
+    // Feature Modules
     UserModule,
-    MasterRoleModule,
     UserAllowRoleModule,
-    PermissionModule,
   ],
 })
 export class AppModule {}

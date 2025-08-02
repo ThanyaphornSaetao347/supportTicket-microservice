@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Users } from '../users/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
+import { KafkaService } from '../../../libs/common/src/kafka/kafka.service';
 import * as bcrypt from 'bcrypt';
 
 interface AuthResponse {
@@ -28,6 +29,7 @@ export class AuthService {
     private userRepo: Repository<Users>,
     private jwtService: JwtService,
     private configService: ConfigService,
+    private kafkaService: KafkaService,
   ) {}
 
   async register(dto: { username: string; password: string }) {
@@ -42,7 +44,18 @@ export class AuthService {
       password: hashed 
     });
 
-    await this.userRepo.save(newuser);
+    const savedUser = await this.userRepo.save(newuser);
+
+    // 🎉 Emit Kafka event for user registration
+    await this.kafkaService.emitAuthEvent({
+      eventType: 'USER_REGISTERED',
+      userId: savedUser.id,
+      username: savedUser.username,
+      data: {
+        registrationMethod: 'direct',
+        timestamp: new Date(),
+      }
+    });
 
     return {
       code: 1,
@@ -61,6 +74,18 @@ export class AuthService {
 
     if (!user) {
       console.log('User not found:', username);
+      
+      // Log failed login attempt
+      await this.kafkaService.emitAuthEvent({
+        eventType: 'LOGIN_FAILED',
+        username: username,
+        data: {
+          reason: 'USER_NOT_FOUND',
+          ip: 'unknown', // You can get this from request
+          timestamp: new Date(),
+        }
+      });
+      
       return null;
     }
 
@@ -71,6 +96,19 @@ export class AuthService {
 
     if (!isPasswordValid) {
       console.log('Invalid password for user:', username);
+      
+      // Log failed login attempt
+      await this.kafkaService.emitAuthEvent({
+        eventType: 'LOGIN_FAILED',
+        userId: user.id,
+        username: username,
+        data: {
+          reason: 'INVALID_PASSWORD',
+          ip: 'unknown',
+          timestamp: new Date(),
+        }
+      });
+      
       return null;
     }
 
@@ -114,6 +152,19 @@ export class AuthService {
     
     const permissions = await this.getUserPermissions(user.id);
     
+    // 🎉 Emit successful login event
+    await this.kafkaService.emitAuthEvent({
+      eventType: 'LOGIN_SUCCESS',
+      userId: user.id,
+      username: user.username,
+      data: {
+        loginTimestamp: new Date(),
+        tokenExpiresAt: new Date(expiresTimestamp * 1000),
+        permissionsCount: permissions.length,
+        ip: 'unknown', // You can get this from request context
+      }
+    });
+
     return {
       code: 1,
       status: true,
@@ -181,12 +232,43 @@ export class AuthService {
       });
       
       if (!user) {
+        // Log token validation failure
+        await this.kafkaService.emitAuthEvent({
+          eventType: 'TOKEN_VALIDATION_FAILED',
+          userId: decoded.sub,
+          data: {
+            reason: 'USER_NOT_FOUND',
+            tokenData: decoded,
+            timestamp: new Date(),
+          }
+        });
+        
         throw new UnauthorizedException('User not found');
       }
+
+      // Log successful token validation
+      await this.kafkaService.emitAuthEvent({
+        eventType: 'TOKEN_VALIDATED',
+        userId: user.id,
+        username: user.username,
+        data: {
+          tokenExpiresAt: new Date(decoded.exp * 1000),
+          timestamp: new Date(),
+        }
+      });
 
       return user;
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
+        // Log token expiration
+        await this.kafkaService.emitAuthEvent({
+          eventType: 'TOKEN_EXPIRED',
+          data: {
+            expiredAt: error.expiredAt,
+            timestamp: new Date(),
+          }
+        });
+        
         throw new UnauthorizedException({
           message: 'Token expired',
           error: 'TOKEN_EXPIRED',
@@ -210,12 +292,28 @@ export class AuthService {
       const timeDiff = expiresAt.getTime() - now.getTime();
       const minutesLeft = Math.floor(timeDiff / (1000 * 60));
       
-      return {
+      const result = {
         isExpiring: minutesLeft <= 15,
         expiresAt,
         minutesLeft,
         shouldRefresh: minutesLeft <= 5,
       };
+
+      // Log token status check
+      if (result.shouldRefresh) {
+        await this.kafkaService.emitAuthEvent({
+          eventType: 'TOKEN_REFRESH_NEEDED',
+          userId: decoded.sub,
+          username: decoded.username,
+          data: {
+            minutesLeft,
+            expiresAt,
+            timestamp: new Date(),
+          }
+        });
+      }
+      
+      return result;
     } catch (error) {
       return {
         isExpiring: true,
@@ -224,5 +322,17 @@ export class AuthService {
         shouldRefresh: true,
       };
     }
+  }
+
+  async logout(userId: number, username: string): Promise<void> {
+    // Emit logout event
+    await this.kafkaService.emitAuthEvent({
+      eventType: 'USER_LOGOUT',
+      userId,
+      username,
+      data: {
+        logoutTimestamp: new Date(),
+      }
+    });
   }
 }

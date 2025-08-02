@@ -1,5 +1,7 @@
+// libs/common/src/kafka/kafka.service.ts
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Kafka, Producer, Consumer, KafkaMessage as KafkaJSMessage } from 'kafkajs';
+import { Kafka, Producer, Consumer, KafkaMessage } from 'kafkajs';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class KafkaService implements OnModuleInit, OnModuleDestroy {
@@ -8,24 +10,29 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private producer: Producer;
   private consumers: Map<string, Consumer> = new Map();
 
-  constructor(
-    private readonly clientId: string,
-    private readonly brokers: string[],
-  ) {
+  constructor(private configService: ConfigService) {
     this.kafka = new Kafka({
-      clientId: this.clientId,
-      brokers: this.brokers,
+      clientId: 'auth-service',
+      brokers: [this.configService.get('KAFKA_BROKERS', 'localhost:9092')],
+      retry: {
+        initialRetryTime: 100,
+        retries: 8,
+      },
     });
-    this.producer = this.kafka.producer();
+
+    this.producer = this.kafka.producer({
+      maxInFlightRequests: 1,
+      idempotent: true,
+      transactionTimeout: 30000,
+    });
   }
 
   async onModuleInit() {
     try {
       await this.producer.connect();
-      this.logger.log(`Kafka producer connected - ClientId: ${this.clientId}`);
+      this.logger.log('Kafka producer connected successfully');
     } catch (error) {
       this.logger.error('Failed to connect Kafka producer:', error);
-      throw error;
     }
   }
 
@@ -36,99 +43,98 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       // Disconnect all consumers
       for (const [groupId, consumer] of this.consumers) {
         await consumer.disconnect();
-        this.logger.log(`Consumer disconnected: ${groupId}`);
+        this.logger.log(`Kafka consumer ${groupId} disconnected`);
       }
       
       this.logger.log('Kafka connections closed');
     } catch (error) {
-      this.logger.error('Error closing Kafka connections:', error);
+      this.logger.error('Error disconnecting Kafka:', error);
     }
   }
 
-  // ส่งข้อความไปยัง Kafka Topic
-  async sendMessage(topic: string, message: any): Promise<void> {
+  async sendMessage(topic: string, message: any, key?: string): Promise<void> {
     try {
-      const kafkaMessage = {
-        value: JSON.stringify({
-          ...message,
-          timestamp: new Date().toISOString(),
-        }),
-      };
-
-      await this.producer.send({
+      const result = await this.producer.send({
         topic,
-        messages: [kafkaMessage],
+        messages: [
+          {
+            key: key || Date.now().toString(),
+            value: JSON.stringify(message),
+            timestamp: Date.now().toString(),
+          },
+        ],
       });
 
-      this.logger.log(`Message sent to topic "${topic}": ${message.eventType}`);
+      this.logger.log(`Message sent to topic ${topic}:`, {
+        partition: result[0].partition,
+        offset: result[0].offset,
+      });
     } catch (error) {
-      this.logger.error(`Failed to send message to topic "${topic}":`, error);
+      this.logger.error(`Failed to send message to topic ${topic}:`, error);
       throw error;
     }
   }
 
-  // สร้าง Consumer สำหรับ Subscribe Topic
-  async subscribe(
-    topic: string,
+  async createConsumer(
     groupId: string,
-    messageHandler: (message: any) => Promise<void>,
+    topics: string[],
+    messageHandler: (topic: string, message: KafkaMessage) => Promise<void>
   ): Promise<void> {
-    if (this.consumers.has(groupId)) {
-      this.logger.warn(`Consumer with groupId "${groupId}" already exists`);
-      return;
-    }
-
     const consumer = this.kafka.consumer({ groupId });
-    this.consumers.set(groupId, consumer);
-
+    
     try {
       await consumer.connect();
-      await consumer.subscribe({ topic, fromBeginning: false });
+      await consumer.subscribe({ topics });
 
       await consumer.run({
         eachMessage: async ({ topic, partition, message }) => {
           try {
-            const parsedMessage = JSON.parse(message.value?.toString() || '{}');
-            
-            this.logger.log(
-              `Received message from topic "${topic}" (partition: ${partition}): ${parsedMessage.eventType}`
-            );
+            this.logger.log(`Received message from topic ${topic}, partition ${partition}:`, {
+              offset: message.offset,
+              key: message.key?.toString(),
+            });
 
-            await messageHandler(parsedMessage);
+            await messageHandler(topic, message);
           } catch (error) {
-            this.logger.error('Error processing message:', error);
-            // TODO: Add dead letter queue handling
+            this.logger.error(`Error processing message from topic ${topic}:`, error);
           }
         },
       });
 
-      this.logger.log(`Consumer subscribed to topic "${topic}" with groupId "${groupId}"`);
+      this.consumers.set(groupId, consumer);
+      this.logger.log(`Kafka consumer ${groupId} started for topics: ${topics.join(', ')}`);
     } catch (error) {
-      this.logger.error(`Failed to subscribe to topic "${topic}":`, error);
-      this.consumers.delete(groupId);
+      this.logger.error(`Failed to start consumer ${groupId}:`, error);
       throw error;
     }
   }
 
-  // ส่งข้อความแบบ Batch
-  async sendBatchMessages(topic: string, messages: any[]): Promise<void> {
-    try {
-      const kafkaMessages = messages.map(msg => ({
-        value: JSON.stringify({
-          ...msg,
-          timestamp: new Date().toISOString(),
-        }),
-      }));
+  // Utility method to emit events easily
+  async emitUserEvent(event: {
+    eventType: string;
+    userId?: number;
+    userIds?: number[];
+    data?: any;
+    timestamp?: Date;
+  }): Promise<void> {
+    await this.sendMessage('user-events', {
+      ...event,
+      timestamp: event.timestamp || new Date(),
+      service: 'auth-service',
+    });
+  }
 
-      await this.producer.send({
-        topic,
-        messages: kafkaMessages,
-      });
-
-      this.logger.log(`Batch of ${messages.length} messages sent to topic "${topic}"`);
-    } catch (error) {
-      this.logger.error(`Failed to send batch messages to topic "${topic}":`, error);
-      throw error;
-    }
+  async emitAuthEvent(event: {
+    eventType: string;
+    userId?: number;
+    username?: string;
+    data?: any;
+    timestamp?: Date;
+  }): Promise<void> {
+    await this.sendMessage('auth-events', {
+      ...event,
+      timestamp: event.timestamp || new Date(),
+      service: 'auth-service',
+    });
   }
 }
