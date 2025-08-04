@@ -12,7 +12,7 @@ import { ConfigService } from '@nestjs/config';
           transport: Transport.KAFKA,
           options: {
             client: {
-              clientId: 'user-service',
+              clientId: 'ticket-service',
               brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
             },
             producer: {

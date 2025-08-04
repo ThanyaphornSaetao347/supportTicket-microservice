@@ -270,4 +270,55 @@ export class UserService {
       message: 'ลบข้อมูลสำเร็จ'
     };
   }
+
+  async getUserPermissions(userId: number): Promise<number[]> {
+    try {
+      // ✅ Get user roles and convert to permission IDs
+      const userRoles = await this.userRepository
+        .createQueryBuilder('user')
+        .leftJoinAndSelect('user.userAllowRoles', 'uar')
+        .leftJoinAndSelect('uar.role', 'role')
+        .where('user.id = :userId', { userId })
+        .getOne();
+      
+      if (!userRoles || !userRoles.userAllowRoles) {
+        return [];
+      }
+      
+      // Convert roles to permission IDs (you can customize this logic)
+      const roleIds = userRoles.userAllowRoles.map(uar => uar.role_id);
+      console.log(`User ${userId} has roles:`, roleIds);
+      
+      return roleIds;
+      
+    } catch (error) {
+      console.error('Error getting user permissions:', error);
+      return [];
+    }
+  }
+
+  async getUserRoles(userId: number): Promise<string[]> {
+    try {
+      const user = await this.userRepository.findOne({
+        where: { id: userId },
+        relations: ['userAllowRoles', 'userAllowRoles.role']
+      });
+
+      if (!user || !user.userAllowRoles) {
+        return [];
+      }
+
+      return user.userAllowRoles
+        .map(uar => uar.role?.role_name)
+        .filter(Boolean);
+    } catch (error) {
+      console.error('Error getting user roles:', error);
+      return [];
+    }
+  }
+
+  async getUserRoleNames(userId: number): Promise<string[]> {
+    // Same as getUserRoles - you can use either method
+    return this.getUserRoles(userId);
+  }
 }

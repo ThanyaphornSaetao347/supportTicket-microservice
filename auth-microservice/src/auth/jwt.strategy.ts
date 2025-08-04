@@ -1,54 +1,52 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Users } from '../users/entities/user.entity';
+import { ClientKafka } from '@nestjs/microservices';
+import { lastValueFrom, timeout } from 'rxjs';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     private configService: ConfigService,
-    @InjectRepository(Users)
-    private userRepo: Repository<Users>,
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka, // ✅ Use Kafka client
   ) {
     const jwtSecret = configService.get<string>('JWT_SECRET') || 'fallback_secret_key';
-    
+
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       secretOrKey: jwtSecret,
     });
-    
-    console.log('JwtStrategy initialized with secret:', jwtSecret);
   }
 
   async validate(payload: any) {
-    console.log('JwtStrategy.validate called with payload:', payload);
-    
-    if (!payload) {
+    if (!payload || !payload.sub) {
       throw new UnauthorizedException('Invalid token payload');
     }
 
-    const user = await this.userRepo.findOne({
-      where: { id: payload.sub },
-      select: ['id', 'username']
-    });
+    try {
+      // ✅ Call User Service via Kafka
+      const response = await lastValueFrom(
+        this.userClient.send('user_find_by_id', {
+          value: { id: payload.sub }
+        }).pipe(timeout(5000))
+      );
 
-    if (!user) {
-      console.log('User not found in database:', payload.sub);
-      throw new UnauthorizedException('User not found');
+      const user = response?.data;
+
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      return {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+      };
+    } catch (error) {
+      console.error('JWT Strategy validation error:', error);
+      throw new UnauthorizedException('User validation failed');
     }
-    
-    console.log('User validated successfully:', user);
-    
-    return {
-      id: user.id,
-      userId: user.id,
-      user_id: user.id,
-      sub: user.id,
-      username: user.username
-    };
   }
 }

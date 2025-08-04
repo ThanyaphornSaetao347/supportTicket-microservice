@@ -1,10 +1,9 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Users } from '../users/entities/user.entity';
 import { ConfigService } from '@nestjs/config';
-import { KafkaService } from '../../../libs/common/src/kafka/kafka.service';
+import { ClientKafka } from '@nestjs/microservices';
+import { lastValueFrom, timeout } from 'rxjs';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
 import * as bcrypt from 'bcrypt';
 
 interface AuthResponse {
@@ -25,97 +24,142 @@ interface AuthResponse {
 @Injectable()
 export class AuthService {
   constructor(
-    @InjectRepository(Users)
-    private userRepo: Repository<Users>,
     private jwtService: JwtService,
     private configService: ConfigService,
     private kafkaService: KafkaService,
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka, // ✅ User Service Client
   ) {}
 
-  async register(dto: { username: string; password: string }) {
-    const existingUser = await this.userRepo.findOne({ where: { username: dto.username } });
-    if (existingUser) {
-      throw new UnauthorizedException('Username already exists');
-    }
+  async onModuleInit() {
+    // Subscribe to user service responses
+    this.userClient.subscribeToResponseOf('user_find_by_username');
+    this.userClient.subscribeToResponseOf('user_find_by_id');
+    this.userClient.subscribeToResponseOf('user_create');
+    this.userClient.subscribeToResponseOf('user_get_permissions');
+    
+    await this.userClient.connect();
+  }
 
-    const hashed = await bcrypt.hash(dto.password, 10);
-    const newuser = this.userRepo.create({ 
-      username: dto.username, 
-      password: hashed 
-    });
-
-    const savedUser = await this.userRepo.save(newuser);
-
-    // 🎉 Emit Kafka event for user registration
-    await this.kafkaService.emitAuthEvent({
-      eventType: 'USER_REGISTERED',
-      userId: savedUser.id,
-      username: savedUser.username,
-      data: {
-        registrationMethod: 'direct',
-        timestamp: new Date(),
+  async register(dto: { username: string; password: string; email: string; firstname: string; lastname: string; phone: string }) {
+    try {
+      // ✅ Check if user exists via User Service
+      const existingUser = await this.findUserByUsername(dto.username);
+      if (existingUser) {
+        return {
+          code: 0,
+          status: false,
+          message: 'Username already exists',
+        };
       }
-    });
 
-    return {
-      code: 1,
-      status: true,
-      message: 'User registered successfully',
-    };
+      // ✅ Hash password
+      const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+      // ✅ Create user via User Service
+      const createUserResponse = await lastValueFrom(
+        this.userClient.send('user_create', {
+          value: {
+            createUserDto: {
+              ...dto,
+              password: hashedPassword,
+              create_by: 1, // System user
+              update_by: 1,
+              isenabled: true,
+            },
+            userId: 1, // System user
+          }
+        }).pipe(timeout(5000))
+      );
+
+      if (createUserResponse.code === '1') {
+        // 🎉 Emit registration event
+        await this.kafkaService.emitUserRegistered({
+          userId: createUserResponse.data.id,
+          username: createUserResponse.data.username,
+          email: createUserResponse.data.email,
+          registrationMethod: 'direct',
+          timestamp: new Date(),
+        });
+
+        return {
+          code: 1,
+          status: true,
+          message: 'User registered successfully',
+          data: {
+            id: createUserResponse.data.id,
+            username: createUserResponse.data.username,
+            email: createUserResponse.data.email,
+          }
+        };
+      } else {
+        return {
+          code: 0,
+          status: false,
+          message: createUserResponse.message || 'Registration failed',
+        };
+      }
+    } catch (error) {
+      console.error('Registration error:', error);
+      return {
+        code: 0,
+        status: false,
+        message: 'Registration failed',
+        error: error.message,
+      };
+    }
   }
 
   async validateUser(username: string, password: string): Promise<any> {
     console.log('Attempting to validate user:', username);
 
-    const user = await this.userRepo.findOne({ 
-      where: { username: username },
-      select: ['id', 'username', 'password']
-    });
+    try {
+      // ✅ Get user from User Service via Kafka
+      const user = await this.findUserByUsername(username);
 
-    if (!user) {
-      console.log('User not found:', username);
-      
-      // Log failed login attempt
-      await this.kafkaService.emitAuthEvent({
-        eventType: 'LOGIN_FAILED',
-        username: username,
-        data: {
+      if (!user) {
+        console.log('User not found:', username);
+        
+        // Log failed login attempt
+        await this.kafkaService.emitUserLoginFailed({
+          username: username,
           reason: 'USER_NOT_FOUND',
-          ip: 'unknown', // You can get this from request
+          ip: 'unknown',
           timestamp: new Date(),
-        }
-      });
-      
-      return null;
-    }
+        });
+        
+        return null;
+      }
 
-    console.log('Found user ID:', user.id, 'Username:', user.username);
+      console.log('Found user ID:', user.id, 'Username:', user.username);
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    console.log('Password validation result:', isPasswordValid);
+      // ✅ Validate password
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      console.log('Password validation result:', isPasswordValid);
 
-    if (!isPasswordValid) {
-      console.log('Invalid password for user:', username);
-      
-      // Log failed login attempt
-      await this.kafkaService.emitAuthEvent({
-        eventType: 'LOGIN_FAILED',
-        userId: user.id,
-        username: username,
-        data: {
+      if (!isPasswordValid) {
+        console.log('Invalid password for user:', username);
+        
+        // Log failed login attempt
+        await this.kafkaService.emitUserLoginFailed({
+          userId: user.id,
+          username: username,  
           reason: 'INVALID_PASSWORD',
           ip: 'unknown',
           timestamp: new Date(),
-        }
-      });
-      
+        });
+        
+        return null;
+      }
+
+      // ✅ Return user without password
+      const { password: _, ...result } = user;
+      console.log('Validation successful, returning user:', result);
+
+      return result;
+    } catch (error) {
+      console.error('Error validating user:', error);
       return null;
     }
-
-    const { password: _, ...result } = user;
-    console.log('Validation successful, returning user:', result);
-
-    return result;
   }
 
   async login(user: any): Promise<AuthResponse> {
@@ -150,19 +194,17 @@ export class AuthService {
     const now = Math.floor(Date.now() / 1000);
     const expiresTimestamp = now + expiresInSeconds;
     
+    // ✅ Get user permissions from User Service
     const permissions = await this.getUserPermissions(user.id);
     
     // 🎉 Emit successful login event
-    await this.kafkaService.emitAuthEvent({
-      eventType: 'LOGIN_SUCCESS',
+    await this.kafkaService.emitUserLoggedIn({
       userId: user.id,
       username: user.username,
-      data: {
-        loginTimestamp: new Date(),
-        tokenExpiresAt: new Date(expiresTimestamp * 1000),
-        permissionsCount: permissions.length,
-        ip: 'unknown', // You can get this from request context
-      }
+      loginTimestamp: new Date(),
+      tokenExpiresAt: new Date(expiresTimestamp * 1000),
+      permissionsCount: permissions.length,
+      ip: 'unknown',
     });
 
     return {
@@ -181,27 +223,112 @@ export class AuthService {
     };
   }
 
+  async validateToken(token: string) {
+    try {
+      const decoded = this.jwtService.verify(token);
+      
+      // ✅ Get user from User Service to ensure user still exists
+      const user = await this.findUserById(decoded.sub);
+      
+      if (!user) {
+        // Log token validation failure
+        await this.kafkaService.emitTokenValidationFailed({
+          userId: decoded.sub,
+          reason: 'USER_NOT_FOUND',
+          tokenData: decoded,
+          timestamp: new Date(),
+        });
+        
+        throw new UnauthorizedException('User not found');
+      }
+
+      // Log successful token validation
+      await this.kafkaService.emitTokenValidated({
+        userId: user.id,
+        username: user.username,
+        tokenExpiresAt: new Date(decoded.exp * 1000),
+        timestamp: new Date(),
+      });
+
+      return user;
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        // Log token expiration
+        await this.kafkaService.emitTokenExpired({
+          expiredAt: error.expiredAt,
+          timestamp: new Date(),
+        });
+        
+        throw new UnauthorizedException({
+          message: 'Token expired',
+          error: 'TOKEN_EXPIRED',
+          statusCode: 401,
+        });
+      }
+      throw new UnauthorizedException('Invalid token');
+    }
+  }
+
   async getUserPermissions(userId: number): Promise<number[]> {
     try {
-      const userRoles = await this.userRepo.query(`
-        SELECT role_id 
-        FROM users_allow_role 
-        WHERE user_id = $1
-      `, [userId]);
-      
-      if (!userRoles || userRoles.length === 0) {
-        console.log(`No roles found for user ${userId}`);
-        return [];
+      // ✅ Get permissions from User Service
+      const response = await lastValueFrom(
+        this.userClient.send('user_get_permissions', {
+          value: { userId }
+        }).pipe(timeout(5000))
+      );
+
+      if (response && response.data) {
+        return response.data;
       }
       
-      const roleIds = userRoles.map(r => r.role_id);
-      console.log(`User ${userId} has roles:`, roleIds);
-      
-      return roleIds;
+      console.log(`No permissions found for user ${userId}`);
+      return [];
       
     } catch (error) {
       console.error('Error getting user permissions:', error);
       return [];
+    }
+  }
+
+  async logout(userId: number, username: string): Promise<void> {
+    // Emit logout event
+    await this.kafkaService.emitUserLoggedOut({
+      userId,
+      username,
+      logoutTimestamp: new Date(),
+    });
+  }
+
+  // ✅ Helper method to find user by username via User Service
+  private async findUserByUsername(username: string): Promise<any> {
+    try {
+      const response = await lastValueFrom(
+        this.userClient.send('user_find_by_username', {
+          value: { username }
+        }).pipe(timeout(5000))
+      );
+
+      return response?.data || null;
+    } catch (error) {
+      console.error('Error finding user by username:', error);
+      return null;
+    }
+  }
+
+  // ✅ Helper method to find user by ID via User Service
+  private async findUserById(userId: number): Promise<any> {
+    try {
+      const response = await lastValueFrom(
+        this.userClient.send('user_find_by_id', {
+          value: { id: userId }
+        }).pipe(timeout(5000))
+      );
+
+      return response?.data || null;
+    } catch (error) {
+      console.error('Error finding user by ID:', error);
+      return null;
     }
   }
 
@@ -220,62 +347,6 @@ export class AuthService {
         return value * 24 * 60 * 60;
       default:
         return 3 * 60 * 60;
-    }
-  }
-
-  async validateToken(token: string) {
-    try {
-      const decoded = this.jwtService.verify(token);
-      const user = await this.userRepo.findOne({ 
-        where: { id: decoded.sub },
-        select: ['id', 'username']
-      });
-      
-      if (!user) {
-        // Log token validation failure
-        await this.kafkaService.emitAuthEvent({
-          eventType: 'TOKEN_VALIDATION_FAILED',
-          userId: decoded.sub,
-          data: {
-            reason: 'USER_NOT_FOUND',
-            tokenData: decoded,
-            timestamp: new Date(),
-          }
-        });
-        
-        throw new UnauthorizedException('User not found');
-      }
-
-      // Log successful token validation
-      await this.kafkaService.emitAuthEvent({
-        eventType: 'TOKEN_VALIDATED',
-        userId: user.id,
-        username: user.username,
-        data: {
-          tokenExpiresAt: new Date(decoded.exp * 1000),
-          timestamp: new Date(),
-        }
-      });
-
-      return user;
-    } catch (error) {
-      if (error.name === 'TokenExpiredError') {
-        // Log token expiration
-        await this.kafkaService.emitAuthEvent({
-          eventType: 'TOKEN_EXPIRED',
-          data: {
-            expiredAt: error.expiredAt,
-            timestamp: new Date(),
-          }
-        });
-        
-        throw new UnauthorizedException({
-          message: 'Token expired',
-          error: 'TOKEN_EXPIRED',
-          statusCode: 401,
-        });
-      }
-      throw new UnauthorizedException('Invalid token');
     }
   }
 
@@ -301,15 +372,12 @@ export class AuthService {
 
       // Log token status check
       if (result.shouldRefresh) {
-        await this.kafkaService.emitAuthEvent({
-          eventType: 'TOKEN_REFRESH_NEEDED',
+        await this.kafkaService.emitTokenRefreshNeeded({
           userId: decoded.sub,
           username: decoded.username,
-          data: {
-            minutesLeft,
-            expiresAt,
-            timestamp: new Date(),
-          }
+          minutesLeft,
+          expiresAt,
+          timestamp: new Date(),
         });
       }
       
@@ -322,17 +390,5 @@ export class AuthService {
         shouldRefresh: true,
       };
     }
-  }
-
-  async logout(userId: number, username: string): Promise<void> {
-    // Emit logout event
-    await this.kafkaService.emitAuthEvent({
-      eventType: 'USER_LOGOUT',
-      userId,
-      username,
-      data: {
-        logoutTimestamp: new Date(),
-      }
-    });
   }
 }

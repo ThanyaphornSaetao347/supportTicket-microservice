@@ -1,13 +1,30 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { ClientsModule, Transport } from '@nestjs/microservices';
+import { ConfigService } from '@nestjs/config';
 import { PermissionService } from './permission.service';
 import { PermissionGuard } from './permission.guard';
-import { UsersAllowRole } from '../users_allow_role/entities/users_allow_role.entity';
-import { MasterRole } from '../master_role/entities/master_role.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UsersAllowRole, MasterRole])
+    // ✅ Remove TypeORM imports - use Kafka instead
+    ClientsModule.registerAsync([
+      {
+        name: 'USER_SERVICE',
+        useFactory: (configService: ConfigService) => ({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: 'auth-permission-service',
+              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+            },
+            consumer: {
+              groupId: 'auth-permission-consumer',
+            },
+          },
+        }),
+        inject: [ConfigService],
+      },
+    ]),
   ],
   providers: [PermissionService, PermissionGuard],
   exports: [PermissionService, PermissionGuard]

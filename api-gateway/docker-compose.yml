@@ -1,20 +1,7 @@
+# docker-compose.yml
 version: '3.8'
-<<<<<<< HEAD
-services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:latest
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
-  kafka:
-    image: confluentinc/cp-kafka:latest
-=======
 
 services:
-  # Kafka Infrastructure
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     hostname: zookeeper
@@ -32,69 +19,26 @@ services:
     image: confluentinc/cp-kafka:7.4.0
     hostname: kafka
     container_name: kafka
->>>>>>> e9c5035 (API Gateway)
     depends_on:
       - zookeeper
     ports:
       - "9092:9092"
-<<<<<<< HEAD
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: support_system
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password123
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-volumes:
-  postgres_data:
-=======
-      - "9997:9997"
+      - "9094:9094"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_JMX_PORT: 9997
-      KAFKA_JMX_OPTS: -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=kafka -Dcom.sun.management.jmxremote.rmi.port=9997
+      KAFKA_CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+      KAFKA_CONFLUENT_METRICS_ENABLE: 'false'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
     volumes:
       - kafka-data:/var/lib/kafka/data
 
-  # API Gateway
-  api-gateway:
-    build: .
-    container_name: api-gateway
-    ports:
-      - "3001:3001"
-    depends_on:
-      - kafka
-    environment:
-      JWT_SECRET: your-super-secret-jwt-key-production
-      JWT_EXPIRES_IN: 3h
-      KAFKA_BROKERS: kafka:29092
-      PORT: 3001
-      NODE_ENV: production
-      CORS_ORIGINS: http://localhost:3000,http://localhost:4200
-    volumes:
-      - ./logs:/app/logs
-    restart: unless-stopped
-    networks:
-      - microservices-network
-
-  # Kafka UI (for development)
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
@@ -105,15 +49,21 @@ volumes:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-    networks:
-      - microservices-network
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: support_system
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
 
 volumes:
   zookeeper-data:
   zookeeper-logs:
   kafka-data:
-
-networks:
-  microservices-network:
-    driver: bridge
->>>>>>> e9c5035 (API Gateway)
+  postgres-data:

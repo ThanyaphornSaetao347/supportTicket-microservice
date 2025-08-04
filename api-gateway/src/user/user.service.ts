@@ -5,14 +5,14 @@ import { lastValueFrom } from 'rxjs';
 
 @Injectable()
 export class UserService {
-  private authServiceURL = 'http://localhost:3002'; // แก้ตาม port ของ auth-service
+  private userServiceURL = 'http://localhost:3005'; // แก้ตาม port ของ user-service
 
   constructor(private readonly httpService: HttpService) {}
 
   async getUserById(userId: number): Promise<any> {
     try {
       const response = await lastValueFrom(
-        this.httpService.get(`${this.authServiceURL}/users/${userId}`)
+        this.httpService.get(`${this.userServiceURL}/users/${userId}`)
       );
       return response.data;
     } catch (error) {
