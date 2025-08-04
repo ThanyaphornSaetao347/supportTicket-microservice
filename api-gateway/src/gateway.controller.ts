@@ -1,11 +1,11 @@
-import { 
-  Controller, 
-  Get, 
-  Post, 
-  Put, 
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
   Delete,
-  Param, 
-  Body, 
+  Param,
+  Body,
   Query,
   UseGuards,
   Request,
@@ -14,7 +14,13 @@ import {
   ParseIntPipe,
   ValidationPipe,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { GatewayService } from './gateway.service';
 import { UserService } from './user/user.service';
 import { AuthService } from './auth/auth.service';
@@ -83,7 +89,7 @@ export class GatewayController {
   @ApiOperation({ summary: 'Health check' })
   async healthCheck() {
     const servicesHealth = await this.gatewayService.checkServicesHealth();
-    
+
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
@@ -99,7 +105,10 @@ export class GatewayController {
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(@Body(ValidationPipe) loginDto: LoginDto) {
     try {
-      const user = await this.authService.validateUser(loginDto.username, loginDto.password);
+      const user = await this.authService.validateUser(
+        loginDto.username,
+        loginDto.password,
+      );
       if (!user) {
         throw new HttpException('Invalid credentials', HttpStatus.UNAUTHORIZED);
       }
@@ -107,7 +116,7 @@ export class GatewayController {
     } catch (error) {
       throw new HttpException(
         error.message || 'Login failed',
-        error.status || HttpStatus.INTERNAL_SERVER_ERROR
+        error.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -124,7 +133,7 @@ export class GatewayController {
   @ApiOperation({ summary: 'Get user profile' })
   async getProfile(@Request() req) {
     try {
-      const profile = await this.userService.getUserProfile(req.user.id);
+      const profile = await this.userService.getUserById(req.user.id);
       return {
         message: 'Profile fetched successfully',
         data: profile,
@@ -141,10 +150,16 @@ export class GatewayController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update user profile' })
-  async updateProfile(@Request() req, @Body(ValidationPipe) updateProfileDto: UpdateProfileDto) {
+  async updateProfile(
+    @Request() req,
+    @Body(ValidationPipe) updateProfileDto: UpdateProfileDto,
+  ) {
     try {
-      const updatedProfile = await this.userService.updateUserProfile(req.user.id, updateProfileDto);
-      
+      const updatedProfile = await this.gatewayService.updateUser(
+        req.user.id,
+        updateProfileDto,
+      );
+
       await this.gatewayService.publishUserAction({
         userId: req.user.id,
         action: 'UPDATE_PROFILE',
@@ -158,7 +173,7 @@ export class GatewayController {
     } catch (error) {
       throw new HttpException(
         'Failed to update profile',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -177,27 +192,29 @@ export class GatewayController {
     @Query('role') role?: string,
     @Query('search') search?: string,
     @Query('page') page: number = 1,
-    @Query('limit') limit: number = 10
+    @Query('limit') limit: number = 10,
   ) {
     try {
       let users;
 
       if (search) {
-        users = await this.userService.searchUsers(search);
+        const allUsers = await this.gatewayService.getUsers();
+        users = allUsers.filter(user => user.username.includes(search) || user.email.includes(search));
       } else if (role) {
-        users = await this.userService.getUsersByRole(role);
+        const allUsers = await this.gatewayService.getUsers();
+        users = allUsers.filter(user => user.role === role);
       } else {
         users = await this.gatewayService.getUsers();
       }
-      
+
       await this.gatewayService.publishUserAction({
         userId: req.user?.id,
         action: 'GET_USERS',
         timestamp: new Date(),
-        metadata: { role, search, page, limit }
+        metadata: { role, search, page, limit },
       });
 
-      // Simple pagination (in production, this should be handled by the service)
+      // Simple pagination
       const startIndex = (page - 1) * limit;
       const endIndex = page * limit;
       const paginatedUsers = users.slice(startIndex, endIndex);
@@ -209,13 +226,13 @@ export class GatewayController {
           page,
           limit,
           total: users.length,
-          totalPages: Math.ceil(users.length / limit)
+          totalPages: Math.ceil(users.length / limit),
         },
       };
     } catch (error) {
       throw new HttpException(
         'Failed to fetch users',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -227,7 +244,7 @@ export class GatewayController {
   async getUser(@Param('id', ParseIntPipe) id: number, @Request() req) {
     try {
       const user = await this.userService.getUserById(id);
-      
+
       await this.gatewayService.publishUserAction({
         userId: req.user?.id,
         action: 'GET_USER_DETAIL',
@@ -240,10 +257,7 @@ export class GatewayController {
         data: user,
       };
     } catch (error) {
-      throw new HttpException(
-        `User with ID ${id} not found`,
-        HttpStatus.NOT_FOUND
-      );
+      throw new HttpException(`User with ID ${id} not found`, HttpStatus.NOT_FOUND);
     }
   }
 
@@ -251,10 +265,13 @@ export class GatewayController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create new user' })
-  async createUser(@Body(ValidationPipe) createUserDto: CreateUserDto, @Request() req) {
+  async createUser(
+    @Body(ValidationPipe) createUserDto: CreateUserDto,
+    @Request() req,
+  ) {
     try {
-      const newUser = await this.userService.createUser(createUserDto);
-      
+      const newUser = await this.gatewayService.createUser(createUserDto);
+
       await this.gatewayService.publishUserAction({
         userId: req.user.id,
         action: 'CREATE_USER',
@@ -269,7 +286,7 @@ export class GatewayController {
     } catch (error) {
       throw new HttpException(
         'Failed to create user',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -281,11 +298,11 @@ export class GatewayController {
   async updateUser(
     @Param('id', ParseIntPipe) id: number,
     @Body(ValidationPipe) updateUserDto: UpdateUserDto,
-    @Request() req
+    @Request() req,
   ) {
     try {
-      const updatedUser = await this.userService.updateUser(id, updateUserDto);
-      
+      const updatedUser = await this.gatewayService.updateUser(id, updateUserDto);
+
       await this.gatewayService.publishUserAction({
         userId: req.user.id,
         action: 'UPDATE_USER',
@@ -301,7 +318,7 @@ export class GatewayController {
     } catch (error) {
       throw new HttpException(
         'Failed to update user',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -312,8 +329,8 @@ export class GatewayController {
   @ApiOperation({ summary: 'Delete user' })
   async deleteUser(@Param('id', ParseIntPipe) id: number, @Request() req) {
     try {
-      await this.userService.deleteUser(id);
-      
+      await this.gatewayService.deleteUser(id);
+
       await this.gatewayService.publishUserAction({
         userId: req.user.id,
         action: 'DELETE_USER',
@@ -327,7 +344,7 @@ export class GatewayController {
     } catch (error) {
       throw new HttpException(
         'Failed to delete user',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -349,63 +366,62 @@ export class GatewayController {
     @Query('status') status?: string,
     @Query('priority') priority?: string,
     @Query('assigned_to') assignedTo?: number,
-    @Request() req?: any
+    @Request() req?: any,
   ) {
     try {
       const tickets = await this.gatewayService.getTickets();
-      
-      // Apply filters if provided
+
+      // Apply filters
       let filteredTickets = tickets;
       if (status) {
-        filteredTickets = filteredTickets.filter(ticket => ticket.status === status);
+        filteredTickets = filteredTickets.filter((ticket) => ticket.status === status);
       }
       if (priority) {
-        filteredTickets = filteredTickets.filter(ticket => ticket.priority === priority);
+        filteredTickets = filteredTickets.filter(
+          (ticket) => ticket.priority === priority,
+        );
       }
       if (assignedTo) {
-        filteredTickets = filteredTickets.filter(ticket => ticket.assigned_user_id === assignedTo);
+        filteredTickets = filteredTickets.filter(
+          (ticket) => ticket.assigned_user_id === assignedTo,
+        );
       }
 
-      // Simple pagination
+      // Pagination
       const startIndex = (page - 1) * limit;
       const endIndex = page * limit;
       const paginatedTickets = filteredTickets.slice(startIndex, endIndex);
-      
-      // Log user action to Kafka
+
       await this.gatewayService.publishUserAction({
         userId: req.user?.id,
         action: 'GET_TICKETS',
         timestamp: new Date(),
-        metadata: { page, limit, status, priority, assignedTo }
+        metadata: { page, limit, status, priority, assignedTo },
       });
 
       return {
         message: 'Tickets fetched successfully',
         data: paginatedTickets,
-        pagination: { 
-          page, 
-          limit, 
+        pagination: {
+          page,
+          limit,
           total: filteredTickets.length,
-          totalPages: Math.ceil(filteredTickets.length / limit)
+          totalPages: Math.ceil(filteredTickets.length / limit),
         },
       };
     } catch (error) {
-      throw new HttpException(
-        'Failed to fetch tickets',
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
+      throw new HttpException('Failed to fetch tickets', HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
   @Get('tickets/:id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get ticket details' })
-  async getTicketDetail(@Param('id', ParseIntPipe) id: number, @Request() req) {
+  @ApiOperation({ summary: 'Get ticket by ID' })
+  async getTicket(@Param('id', ParseIntPipe) id: number, @Request() req) {
     try {
       const ticket = await this.gatewayService.getTicketDetail(id);
-      
-      // Log user action
+
       await this.gatewayService.publishUserAction({
         userId: req.user?.id,
         action: 'GET_TICKET_DETAIL',
@@ -414,14 +430,11 @@ export class GatewayController {
       });
 
       return {
-        message: 'Ticket details fetched successfully',
+        message: 'Ticket fetched successfully',
         data: ticket,
       };
     } catch (error) {
-      throw new HttpException(
-        `Failed to fetch ticket with ID ${id}`,
-        HttpStatus.NOT_FOUND
-      );
+      throw new HttpException(`Ticket with ID ${id} not found`, HttpStatus.NOT_FOUND);
     }
   }
 
@@ -429,26 +442,28 @@ export class GatewayController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create new ticket' })
-  async createTicket(@Body(ValidationPipe) createTicketDto: CreateTicketDto, @Request() req) {
+  async createTicket(
+    @Body(ValidationPipe) createTicketDto: CreateTicketDto,
+    @Request() req,
+  ) {
     try {
-      const ticketData = {
-        ...createTicketDto,
-        created_by: req.user.id,
-        status: 'open',
-        created_at: new Date(),
-      };
+      const ticket = await this.gatewayService.createTicket(createTicketDto);
 
-      // Publish ticket creation event to Kafka
-      await this.gatewayService.publishTicketCreated(ticketData);
+      await this.gatewayService.publishUserAction({
+        userId: req.user.id,
+        action: 'CREATE_TICKET',
+        data: createTicketDto,
+        timestamp: new Date(),
+      });
 
       return {
-        message: 'Ticket creation request submitted',
-        data: ticketData,
+        message: 'Ticket created successfully',
+        data: ticket,
       };
     } catch (error) {
       throw new HttpException(
         'Failed to create ticket',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -460,26 +475,27 @@ export class GatewayController {
   async updateTicket(
     @Param('id', ParseIntPipe) id: number,
     @Body(ValidationPipe) updateTicketDto: UpdateTicketDto,
-    @Request() req
+    @Request() req,
   ) {
     try {
-      const updateData = {
-        ...updateTicketDto,
-        updated_by: req.user.id,
-        updated_at: new Date(),
-      };
+      const updatedTicket = await this.gatewayService.updateTicket(id, updateTicketDto);
 
-      // Publish ticket update event
-      await this.gatewayService.publishTicketUpdated(id, updateData);
+      await this.gatewayService.publishUserAction({
+        userId: req.user.id,
+        action: 'UPDATE_TICKET',
+        resourceId: id,
+        data: updateTicketDto,
+        timestamp: new Date(),
+      });
 
       return {
-        message: 'Ticket update request submitted',
-        data: { id, ...updateData },
+        message: 'Ticket updated successfully',
+        data: updatedTicket,
       };
     } catch (error) {
       throw new HttpException(
         'Failed to update ticket',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -490,7 +506,8 @@ export class GatewayController {
   @ApiOperation({ summary: 'Delete ticket' })
   async deleteTicket(@Param('id', ParseIntPipe) id: number, @Request() req) {
     try {
-      // Publish ticket deletion event
+      await this.gatewayService.deleteTicket(id);
+
       await this.gatewayService.publishUserAction({
         userId: req.user.id,
         action: 'DELETE_TICKET',
@@ -499,192 +516,23 @@ export class GatewayController {
       });
 
       return {
-        message: 'Ticket deletion request submitted',
-        data: { id, deleted_by: req.user.id, deleted_at: new Date() },
+        message: 'Ticket deleted successfully',
       };
     } catch (error) {
       throw new HttpException(
         'Failed to delete ticket',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
 
-  // Project Management Routes
-  @Get('projects')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get all projects' })
-  async getProjects(@Request() req) {
-    try {
-      const projects = await this.gatewayService.getProjects();
-      
-      await this.gatewayService.publishUserAction({
-        userId: req.user?.id,
-        action: 'GET_PROJECTS',
-        timestamp: new Date(),
-      });
-
-      return {
-        message: 'Projects fetched successfully',
-        data: projects,
-      };
-    } catch (error) {
-      throw new HttpException(
-        'Failed to fetch projects',
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
-    }
-  }
-
-  @Get('projects/:id')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get project by ID' })
-  async getProjectById(@Param('id', ParseIntPipe) id: number, @Request() req) {
-    try {
-      const project = await this.gatewayService.getProjectById(id);
-      
-      await this.gatewayService.publishUserAction({
-        userId: req.user?.id,
-        action: 'GET_PROJECT_DETAIL',
-        resourceId: id,
-        timestamp: new Date(),
-      });
-
-      return {
-        message: 'Project fetched successfully',
-        data: project,
-      };
-    } catch (error) {
-      throw new HttpException(
-        `Project with ID ${id} not found`,
-        HttpStatus.NOT_FOUND
-      );
-    }
-  }
-
-  // Customer Management Routes
-  @Get('customers')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get all customers' })
-  async getCustomers(@Request() req) {
-    try {
-      const customers = await this.gatewayService.getCustomers();
-      
-      await this.gatewayService.publishUserAction({
-        userId: req.user?.id,
-        action: 'GET_CUSTOMERS',
-        timestamp: new Date(),
-      });
-
-      return {
-        message: 'Customers fetched successfully',
-        data: customers,
-      };
-    } catch (error) {
-      throw new HttpException(
-        'Failed to fetch customers',
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
-    }
-  }
-
-  @Get('customers/:id')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get customer by ID' })
-  async getCustomerById(@Param('id', ParseIntPipe) id: number, @Request() req) {
-    try {
-      const customer = await this.gatewayService.getCustomerById(id);
-      
-      await this.gatewayService.publishUserAction({
-        userId: req.user?.id,
-        action: 'GET_CUSTOMER_DETAIL',
-        resourceId: id,
-        timestamp: new Date(),
-      });
-
-      return {
-        message: 'Customer fetched successfully',
-        data: customer,
-      };
-    } catch (error) {
-      throw new HttpException(
-        `Customer with ID ${id} not found`,
-        HttpStatus.NOT_FOUND
-      );
-    }
-  }
-
-  // Notification Routes
-  @Get('notifications')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get notifications' })
-  @ApiQuery({ name: 'unread', required: false, description: 'Filter unread notifications' })
-  async getNotifications(@Request() req, @Query('unread') unread?: boolean) {
-    try {
-      const notifications = await this.gatewayService.getNotifications();
-      
-      // Filter unread if requested
-      let filteredNotifications = notifications;
-      if (unread !== undefined) {
-        filteredNotifications = notifications.filter(n => n.read === !unread);
-      }
-      
-      await this.gatewayService.publishUserAction({
-        userId: req.user?.id,
-        action: 'GET_NOTIFICATIONS',
-        timestamp: new Date(),
-        metadata: { unread }
-      });
-
-      return {
-        message: 'Notifications fetched successfully',
-        data: filteredNotifications,
-      };
-    } catch (error) {
-      throw new HttpException(
-        'Failed to fetch notifications',
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
-    }
-  }
-
-  @Put('notifications/:id/read')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Mark notification as read' })
-  async markNotificationAsRead(@Param('id', ParseIntPipe) id: number, @Request() req) {
-    try {
-      await this.gatewayService.publishUserAction({
-        userId: req.user.id,
-        action: 'MARK_NOTIFICATION_READ',
-        resourceId: id,
-        timestamp: new Date(),
-      });
-
-      return {
-        message: 'Notification marked as read',
-      };
-    } catch (error) {
-      throw new HttpException(
-        'Failed to mark notification as read',
-        HttpStatus.INTERNAL_SERVER_ERROR
-      );
-    }
-  }
-
-  // Statistics & Analytics
+  // Dashboard statistics
   @Get('dashboard/stats')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get dashboard statistics' })
   async getDashboardStats(@Request() req) {
     try {
-      // This could aggregate data from multiple services
       const [tickets, users, projects, notifications] = await Promise.allSettled([
         this.gatewayService.getTickets(),
         this.gatewayService.getUsers(),
@@ -695,7 +543,9 @@ export class GatewayController {
       const ticketsData = tickets.status === 'fulfilled' ? tickets.value : [];
       const usersData = users.status === 'fulfilled' ? users.value : [];
       const projectsData = projects.status === 'fulfilled' ? projects.value : [];
-      const notificationsData = notifications.status === 'fulfilled' ? notifications.value : [];
+      const notificationsData = notifications.status === 'fulfilled' 
+        ? (notifications.value as Array<{ read: boolean }>) 
+        : [];
 
       const stats = {
         totalTickets: ticketsData.length || 0,
@@ -721,12 +571,12 @@ export class GatewayController {
     } catch (error) {
       throw new HttpException(
         'Failed to fetch dashboard statistics',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
 
-  // Advanced Analytics
+  // User activity analytics
   @Get('analytics/user-activity')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -734,10 +584,10 @@ export class GatewayController {
   @ApiQuery({ name: 'days', required: false, description: 'Number of days to analyze' })
   async getUserActivityAnalytics(@Request() req, @Query('days') days: number = 7) {
     try {
-      // This would typically query analytics service or database
+      // Mock analytics data
       const analyticsData = {
         period: `${days} days`,
-        totalActions: Math.floor(Math.random() * 1000), // Mock data
+        totalActions: Math.floor(Math.random() * 1000),
         uniqueUsers: Math.floor(Math.random() * 100),
         topActions: [
           { action: 'GET_TICKETS', count: Math.floor(Math.random() * 200) },
@@ -751,7 +601,7 @@ export class GatewayController {
         userId: req.user.id,
         action: 'GET_USER_ACTIVITY_ANALYTICS',
         timestamp: new Date(),
-        metadata: { days }
+        metadata: { days },
       });
 
       return {
@@ -761,12 +611,12 @@ export class GatewayController {
     } catch (error) {
       throw new HttpException(
         'Failed to fetch user activity analytics',
-        HttpStatus.INTERNAL_SERVER_ERROR
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
 
-  // System Status
+  // System status
   @Get('system/status')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -774,8 +624,9 @@ export class GatewayController {
   async getSystemStatus() {
     try {
       const servicesHealth = await this.gatewayService.checkServicesHealth();
-      const userServiceHealth = await this.userService.checkUserServiceHealth();
-      
+
+      const userServiceHealth = servicesHealth.find(s => s.name === 'user-service') ?? { status: 'unknown' };
+
       const overallStatus = servicesHealth.every(service => service.status === 'healthy') && 
                            userServiceHealth.status === 'healthy' ? 'healthy' : 'degraded';
 
@@ -783,10 +634,7 @@ export class GatewayController {
         message: 'System status retrieved successfully',
         data: {
           overall: overallStatus,
-          services: [
-            ...servicesHealth,
-            { name: 'user-service', ...userServiceHealth }
-          ],
+          services: servicesHealth,
           timestamp: new Date(),
         },
       };

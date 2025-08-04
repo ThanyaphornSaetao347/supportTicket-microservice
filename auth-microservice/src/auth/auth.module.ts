@@ -23,7 +23,6 @@ import { KafkaModule } from '../libs/common/kafka/kafka.module';
       }),
       inject: [ConfigService],
     }),
-    // ✅ User Service Client
     ClientsModule.registerAsync([
       {
         name: 'USER_SERVICE',
@@ -31,11 +30,11 @@ import { KafkaModule } from '../libs/common/kafka/kafka.module';
           transport: Transport.KAFKA,
           options: {
             client: {
-              clientId: 'auth-to-user-service',
+              clientId: 'user-service',
               brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
             },
             consumer: {
-              groupId: 'auth-user-consumer',
+              groupId: 'user-consumer',
             },
           },
         }),

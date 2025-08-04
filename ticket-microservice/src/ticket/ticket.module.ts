@@ -13,7 +13,7 @@ import { TicketStatus } from '../ticket_status/entities/ticket_status.entity';
 import { TicketStatusHistoryModule } from '../ticket_status_history/ticket_status_history.module';
 import { TicketStatusService } from '../ticket_status/ticket_status.service';
 import { TicketStatusModule } from '../ticket_status/ticket_status.module';
-import { Satisfaction } from '../satisfaction/entities/satisfaction.entity';
+import {  } from '..//entities/.entity';
 import { Users } from '../users/entities/user.entity';
 import { NotificationModule } from '../notification/notification.module';
 import { TicketAssigned } from '../ticket_assigned/entities/ticket_assigned.entity';
@@ -23,7 +23,7 @@ import { TicketAssigned } from '../ticket_assigned/entities/ticket_assigned.enti
     TypeOrmModule.forFeature([
       Ticket,
       Users,
-      Satisfaction,
+      ,
       TicketAttachment,
       TicketStatusHistory,
       TicketCategory,

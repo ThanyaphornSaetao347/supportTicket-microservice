@@ -21,7 +21,9 @@ interface LoginResponse {
 
 @Controller()
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+  ) {}
 
   @MessagePattern('register')
   async register(@Payload() message: { value: RegisterDto }) {
@@ -58,7 +60,7 @@ export class AuthController {
 
   @MessagePattern('profile')
   async getProfile(@Payload() message: any) {
-    const { user } = message.value; // ต้องส่ง user object มาด้วยจาก Gateway
+    const { user } = message.value;
     const permissions = await this.authService.getUserPermissions(user.id);
 
     return {

@@ -27,11 +27,11 @@ export class AuthService {
     private jwtService: JwtService,
     private configService: ConfigService,
     private kafkaService: KafkaService,
-    @Inject('USER_SERVICE') private readonly userClient: ClientKafka, // ✅ User Service Client
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
   ) {}
 
   async onModuleInit() {
-    // Subscribe to user service responses
+    // Subscribe to responses from user service for various patterns
     this.userClient.subscribeToResponseOf('user_find_by_username');
     this.userClient.subscribeToResponseOf('user_find_by_id');
     this.userClient.subscribeToResponseOf('user_create');
@@ -40,9 +40,9 @@ export class AuthService {
     await this.userClient.connect();
   }
 
+  // Register user flow
   async register(dto: { username: string; password: string; email: string; firstname: string; lastname: string; phone: string }) {
     try {
-      // ✅ Check if user exists via User Service
       const existingUser = await this.findUserByUsername(dto.username);
       if (existingUser) {
         return {
@@ -52,27 +52,24 @@ export class AuthService {
         };
       }
 
-      // ✅ Hash password
       const hashedPassword = await bcrypt.hash(dto.password, 10);
 
-      // ✅ Create user via User Service
       const createUserResponse = await lastValueFrom(
         this.userClient.send('user_create', {
           value: {
             createUserDto: {
               ...dto,
               password: hashedPassword,
-              create_by: 1, // System user
+              create_by: 1, // system user id
               update_by: 1,
               isenabled: true,
             },
-            userId: 1, // System user
+            userId: 1,
           }
         }).pipe(timeout(5000))
       );
 
       if (createUserResponse.code === '1') {
-        // 🎉 Emit registration event
         await this.kafkaService.emitUserRegistered({
           userId: createUserResponse.data.id,
           username: createUserResponse.data.username,
@@ -109,95 +106,64 @@ export class AuthService {
     }
   }
 
+  // Validate user credentials during login
   async validateUser(username: string, password: string): Promise<any> {
-    console.log('Attempting to validate user:', username);
-
     try {
-      // ✅ Get user from User Service via Kafka
       const user = await this.findUserByUsername(username);
 
       if (!user) {
-        console.log('User not found:', username);
-        
-        // Log failed login attempt
         await this.kafkaService.emitUserLoginFailed({
-          username: username,
+          username,
           reason: 'USER_NOT_FOUND',
           ip: 'unknown',
           timestamp: new Date(),
         });
-        
         return null;
       }
 
-      console.log('Found user ID:', user.id, 'Username:', user.username);
-
-      // ✅ Validate password
       const isPasswordValid = await bcrypt.compare(password, user.password);
-      console.log('Password validation result:', isPasswordValid);
 
       if (!isPasswordValid) {
-        console.log('Invalid password for user:', username);
-        
-        // Log failed login attempt
         await this.kafkaService.emitUserLoginFailed({
           userId: user.id,
-          username: username,  
+          username,
           reason: 'INVALID_PASSWORD',
           ip: 'unknown',
           timestamp: new Date(),
         });
-        
         return null;
       }
 
-      // ✅ Return user without password
-      const { password: _, ...result } = user;
-      console.log('Validation successful, returning user:', result);
-
-      return result;
+      const { password: _, ...userWithoutPassword } = user;
+      return userWithoutPassword;
     } catch (error) {
       console.error('Error validating user:', error);
       return null;
     }
   }
 
+  // Create JWT token after successful login
   async login(user: any): Promise<AuthResponse> {
-    console.log('Login processing for user:', user.username, 'ID:', user.id);
-    
     if (!user || !user.id || !user.username) {
-      console.error('Invalid user object in login:', user);
       return {
         code: 0,
         status: false,
         message: 'Invalid user data',
         user: null,
-        access_token: null
+        access_token: null,
       };
     }
-    
-    const payload = { 
-      username: user.username, 
-      sub: user.id,
-    };
 
-    console.log('JWT payload:', payload);
-    
+    const payload = { username: user.username, sub: user.id };
     const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') || '3h';
-    console.log('Token will expire in:', expiresIn);
-    
     const accessToken = this.jwtService.sign(payload);
-    
-    console.log('Generated token for user:', user.username);
-    
+
     const expiresInSeconds = this.parseExpiresIn(expiresIn);
     const now = Math.floor(Date.now() / 1000);
     const expiresTimestamp = now + expiresInSeconds;
-    
-    // ✅ Get user permissions from User Service
+
     const permissions = await this.getUserPermissions(user.id);
-    
-    // 🎉 Emit successful login event
+
     await this.kafkaService.emitUserLoggedIn({
       userId: user.id,
       username: user.username,
@@ -211,10 +177,7 @@ export class AuthService {
       code: 1,
       status: true,
       message: 'Login successful',
-      user: {
-        id: user.id,
-        username: user.username,
-      },
+      user: { id: user.id, username: user.username },
       access_token: accessToken,
       expires_in: expiresIn,
       expires_at: new Date(expiresTimestamp * 1000).toISOString(),
@@ -223,26 +186,22 @@ export class AuthService {
     };
   }
 
+  // Validate JWT token and get user info
   async validateToken(token: string) {
     try {
       const decoded = this.jwtService.verify(token);
-      
-      // ✅ Get user from User Service to ensure user still exists
       const user = await this.findUserById(decoded.sub);
       
       if (!user) {
-        // Log token validation failure
         await this.kafkaService.emitTokenValidationFailed({
           userId: decoded.sub,
           reason: 'USER_NOT_FOUND',
           tokenData: decoded,
           timestamp: new Date(),
         });
-        
         throw new UnauthorizedException('User not found');
       }
 
-      // Log successful token validation
       await this.kafkaService.emitTokenValidated({
         userId: user.id,
         username: user.username,
@@ -253,12 +212,10 @@ export class AuthService {
       return user;
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
-        // Log token expiration
         await this.kafkaService.emitTokenExpired({
           expiredAt: error.expiredAt,
           timestamp: new Date(),
         });
-        
         throw new UnauthorizedException({
           message: 'Token expired',
           error: 'TOKEN_EXPIRED',
@@ -269,30 +226,21 @@ export class AuthService {
     }
   }
 
+  // Fetch user permissions
   async getUserPermissions(userId: number): Promise<number[]> {
     try {
-      // ✅ Get permissions from User Service
       const response = await lastValueFrom(
-        this.userClient.send('user_get_permissions', {
-          value: { userId }
-        }).pipe(timeout(5000))
+        this.userClient.send('user_get_permissions', { value: { userId } }).pipe(timeout(5000))
       );
-
-      if (response && response.data) {
-        return response.data;
-      }
-      
-      console.log(`No permissions found for user ${userId}`);
-      return [];
-      
+      return response?.data || [];
     } catch (error) {
       console.error('Error getting user permissions:', error);
       return [];
     }
   }
 
+  // Emit logout event
   async logout(userId: number, username: string): Promise<void> {
-    // Emit logout event
     await this.kafkaService.emitUserLoggedOut({
       userId,
       username,
@@ -300,15 +248,12 @@ export class AuthService {
     });
   }
 
-  // ✅ Helper method to find user by username via User Service
+  // Helper: find user by username via Kafka User Service
   private async findUserByUsername(username: string): Promise<any> {
     try {
       const response = await lastValueFrom(
-        this.userClient.send('user_find_by_username', {
-          value: { username }
-        }).pipe(timeout(5000))
+        this.userClient.send('user_find_by_username', { value: { username } }).pipe(timeout(5000))
       );
-
       return response?.data || null;
     } catch (error) {
       console.error('Error finding user by username:', error);
@@ -316,15 +261,12 @@ export class AuthService {
     }
   }
 
-  // ✅ Helper method to find user by ID via User Service
+  // Helper: find user by ID via Kafka User Service
   private async findUserById(userId: number): Promise<any> {
     try {
       const response = await lastValueFrom(
-        this.userClient.send('user_find_by_id', {
-          value: { id: userId }
-        }).pipe(timeout(5000))
+        this.userClient.send('user_find_by_id', { value: { id: userId } }).pipe(timeout(5000))
       );
-
       return response?.data || null;
     } catch (error) {
       console.error('Error finding user by ID:', error);
@@ -332,29 +274,25 @@ export class AuthService {
     }
   }
 
+  // Helper: parse expiry string like '3h', '30m' etc.
   private parseExpiresIn(expiresIn: string): number {
     const unit = expiresIn.slice(-1);
     const value = parseInt(expiresIn.slice(0, -1));
-    
     switch (unit) {
-      case 'h':
-        return value * 60 * 60;
-      case 'm':
-        return value * 60;
-      case 's':
-        return value;
-      case 'd':
-        return value * 24 * 60 * 60;
-      default:
-        return 3 * 60 * 60;
+      case 'h': return value * 3600;
+      case 'm': return value * 60;
+      case 's': return value;
+      case 'd': return value * 86400;
+      default: return 10800; // default 3 hours
     }
   }
 
-  async checkTokenExpiration(token: string): Promise<{ 
-    isExpiring: boolean; 
-    expiresAt: Date; 
+  // Check if token is close to expiration
+  async checkTokenExpiration(token: string): Promise<{
+    isExpiring: boolean;
+    expiresAt: Date;
     minutesLeft: number;
-    shouldRefresh: boolean; 
+    shouldRefresh: boolean;
   }> {
     try {
       const decoded = this.jwtService.decode(token) as any;
@@ -362,7 +300,7 @@ export class AuthService {
       const now = new Date();
       const timeDiff = expiresAt.getTime() - now.getTime();
       const minutesLeft = Math.floor(timeDiff / (1000 * 60));
-      
+
       const result = {
         isExpiring: minutesLeft <= 15,
         expiresAt,
@@ -370,7 +308,6 @@ export class AuthService {
         shouldRefresh: minutesLeft <= 5,
       };
 
-      // Log token status check
       if (result.shouldRefresh) {
         await this.kafkaService.emitTokenRefreshNeeded({
           userId: decoded.sub,
@@ -380,7 +317,7 @@ export class AuthService {
           timestamp: new Date(),
         });
       }
-      
+
       return result;
     } catch (error) {
       return {

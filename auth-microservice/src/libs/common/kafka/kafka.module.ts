@@ -7,7 +7,7 @@ import { ConfigService } from '@nestjs/config';
   imports: [
     ClientsModule.registerAsync([
       {
-        name: 'KAFKA_CLIENT',
+        name: 'AUTH_SERVCIE',
         useFactory: (configService: ConfigService) => ({
           transport: Transport.KAFKA,
           options: {

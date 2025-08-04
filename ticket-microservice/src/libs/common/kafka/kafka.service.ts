@@ -1,8 +1,8 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 
 @Injectable()
-export class KafkaService {
+export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaService.name);
 
   constructor(
@@ -16,30 +16,71 @@ export class KafkaService {
 
   async onModuleDestroy() {
     await this.client.close();
+    this.logger.log('🎫 Ticket Service Kafka client disconnected');
   }
 
-  // Ticket Events
+  // ส่งแบบ fire-and-forget
   async emitTicketCreated(data: any) {
-    return this.client.emit('ticket.created', data);
+    try {
+      return this.client.emit('ticket.created', data);
+    } catch (error) {
+      this.logger.error('Failed to emit ticket.created event', error);
+      throw error;
+    }
   }
 
   async emitTicketUpdated(data: any) {
-    return this.client.emit('ticket.updated', data);
+    try {
+      return this.client.emit('ticket.updated', data);
+    } catch (error) {
+      this.logger.error('Failed to emit ticket.updated event', error);
+      throw error;
+    }
   }
 
   async emitTicketAssigned(data: any) {
-    return this.client.emit('ticket.assigned', data);
+    try {
+      return this.client.emit('ticket.assigned', data);
+    } catch (error) {
+      this.logger.error('Failed to emit ticket.assigned event', error);
+      throw error;
+    }
   }
 
   async emitTicketStatusChanged(data: any) {
-    return this.client.emit('ticket.status.changed', data);
+    try {
+      return this.client.emit('ticket.status.changed', data);
+    } catch (error) {
+      this.logger.error('Failed to emit ticket.status.changed event', error);
+      throw error;
+    }
   }
 
   async emitTicketClosed(data: any) {
-    return this.client.emit('ticket.closed', data);
+    try {
+      return this.client.emit('ticket.closed', data);
+    } catch (error) {
+      this.logger.error('Failed to emit ticket.closed event', error);
+      throw error;
+    }
   }
 
   async emitTicketCommentAdded(data: any) {
-    return this.client.emit('ticket.comment.added', data);
+    try {
+      return this.client.emit('ticket.comment.added', data);
+    } catch (error) {
+      this.logger.error('Failed to emit ticket.comment.added event', error);
+      throw error;
+    }
+  }
+
+  // ส่งแบบ request-response (ถ้าต้องการ)
+  async sendMessage(topic: string, message: any) {
+    try {
+      return await this.client.send(topic, message).toPromise();
+    } catch (error) {
+      this.logger.error(`Failed to send message to topic ${topic}`, error);
+      throw error;
+    }
   }
 }

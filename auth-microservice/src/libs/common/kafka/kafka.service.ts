@@ -1,8 +1,8 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 
 @Injectable()
-export class KafkaService {
+export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaService.name);
 
   constructor(
@@ -18,7 +18,7 @@ export class KafkaService {
     await this.client.close();
   }
 
-  // Auth Events
+  // Auth Events emitters
   async emitUserRegistered(data: any) {
     return this.client.emit('user.registered', data);
   }

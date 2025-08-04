@@ -7,13 +7,16 @@ import { ConfigService } from '@nestjs/config';
   imports: [
     ClientsModule.registerAsync([
       {
-        name: 'KAFKA_CLIENT',
+        name: 'USER_SERVICE',
         useFactory: (configService: ConfigService) => ({
           transport: Transport.KAFKA,
           options: {
             client: {
               clientId: 'user-service',
               brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+            },
+            consumer: {
+              groupId: 'user-service-consumer', // ตั้ง groupId สำหรับ consumer
             },
             producer: {
               allowAutoTopicCreation: true,

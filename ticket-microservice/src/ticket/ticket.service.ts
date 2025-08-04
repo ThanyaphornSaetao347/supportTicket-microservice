@@ -12,8 +12,8 @@ import { TicketStatus } from '../ticket_status/entities/ticket_status.entity';
 import { TicketStatusHistoryService } from '../ticket_status_history/ticket_status_history.service';
 import { TicketStatusLanguage } from '../ticket_status_language/entities/ticket_status_language.entity';
 import { CreateTicketStatusDto } from '../ticket_status/dto/create-ticket_status.dto';
-import { CreateSatisfactionDto } from '../satisfaction/dto/create-satisfaction.dto';
-import { Satisfaction } from '../satisfaction/entities/satisfaction.entity';
+import { CreateDto } from '..//dto/create-.dto';
+import {  } from '..//entities/.entity';
 import { NotificationService } from '../notification/notification.service';
 import { privateDecrypt } from 'crypto';
 import { NotificationType } from '../notification/entities/notification.entity';
@@ -39,8 +39,8 @@ export class TicketService {
     private readonly dataSource: DataSource,
     @InjectRepository(TicketStatus)
     private readonly statusRepo: Repository<TicketStatus>,
-    @InjectRepository(Satisfaction)
-    private readonly satisfactionRepo: Repository<Satisfaction>,
+    @InjectRepository()
+    private readonly Repo: Repository<>,
     @InjectRepository(Users)
     private readonly userRepo: Repository<Users>,
     @InjectRepository(TicketAssigned)
@@ -1228,9 +1228,9 @@ export class TicketService {
     });
   }
 
-  async saveSatisfaction(
+  async save(
     ticketNo: string,
-    createSatisfactionDto: CreateSatisfactionDto,
+    createDto: CreateDto,
     currentUserId: number
   ) {
     // find ticket from ticket_no
@@ -1248,32 +1248,32 @@ export class TicketService {
     }
 
     // ตรวจสอบว่าประเมิฯหรือยัง
-    const existingSatisfaction = await this.satisfactionRepo.findOne({
+    const existing = await this.Repo.findOne({
       where: { ticket_id: ticket.id }
     });
 
-    if (existingSatisfaction) {
+    if (existing) {
       throw new Error('Ticket นี้ได้รับการประเมินความพึงพอใจแล้ว');
     }
 
     // บันทึกการประเมิน
-    const satisfactionData = {
+    const Data = {
       ticket_id: ticket.id,
-      rating: createSatisfactionDto.rating,
+      rating: createDto.rating,
       create_by: currentUserId,
       create_date: new Date()
     };
 
-    const satisfaction = await this.satisfactionRepo.save(satisfactionData);
+    const  = await this.Repo.save(Data);
 
     return {
       ticket_no: ticketNo,
       ticket_id: ticket.id,
-      satisfaction: {
-        id: satisfaction.id,
-        rating: satisfaction.rating,
-        create_by: satisfaction.create_by,
-        create_date: satisfaction.create_date
+      : {
+        id: .id,
+        rating: .rating,
+        create_by: .create_by,
+        create_date: .create_date
       }
     };
   }

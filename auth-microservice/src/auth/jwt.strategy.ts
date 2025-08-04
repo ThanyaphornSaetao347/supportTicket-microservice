@@ -9,7 +9,7 @@ import { lastValueFrom, timeout } from 'rxjs';
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     private configService: ConfigService,
-    @Inject('USER_SERVICE') private readonly userClient: ClientKafka, // ✅ Use Kafka client
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
   ) {
     const jwtSecret = configService.get<string>('JWT_SECRET') || 'fallback_secret_key';
 
@@ -26,7 +26,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     try {
-      // ✅ Call User Service via Kafka
       const response = await lastValueFrom(
         this.userClient.send('user_find_by_id', {
           value: { id: payload.sub }
