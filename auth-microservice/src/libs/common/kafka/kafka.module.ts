@@ -15,6 +15,9 @@ import { ConfigService } from '@nestjs/config';
               clientId: 'auth-service',
               brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
             },
+            consumer: {
+              groupId: 'auth-service-consumer'
+            },
             producer: {
               allowAutoTopicCreation: true,
             },

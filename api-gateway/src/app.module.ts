@@ -5,7 +5,7 @@ import { GatewayController } from './gateway.controller';
 import { GatewayService } from './gateway.service';
 import { UserService } from './user/user.service';
 import { AuthModule } from './auth/auth.module';
-import { KafkaModule } from './kafka/kafka.modul';
+import { KafkaModule } from './kafka/kafka.module';
 
 @Module({
   imports: [
