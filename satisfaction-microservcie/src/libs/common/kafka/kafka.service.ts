@@ -1,8 +1,8 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
+import { Injectable, Inject, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 
 @Injectable()
-export class KafkaService {
+export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaService.name);
 
   constructor(
@@ -33,10 +33,6 @@ export class KafkaService {
 
   // Send requests to other services
   async sendToTicketService(pattern: string, data: any) {
-    return this.client.send(pattern, data);
-  }
-
-  async sendToAuthService(pattern: string, data: any) {
     return this.client.send(pattern, data);
   }
 }

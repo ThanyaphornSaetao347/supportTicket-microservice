@@ -1,6 +1,7 @@
 import { Module, Global } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ConfigService } from '@nestjs/config';
+import { KafkaService } from './kafka.service';
 
 @Global()
 @Module({
@@ -25,8 +26,22 @@ import { ConfigService } from '@nestjs/config';
         }),
         inject: [ConfigService],
       },
+      {
+        name: 'TICKET_SERVICE',
+        useFactory: (configService: ConfigService) => ({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: 'satisfaction-to-ticket-client',
+              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+            },
+          },
+        }),
+        inject: [ConfigService],
+      },
     ]),
   ],
-  exports: [ClientsModule],
+  providers: [KafkaService],
+  exports: [ClientsModule, KafkaService],
 })
 export class KafkaModule {}

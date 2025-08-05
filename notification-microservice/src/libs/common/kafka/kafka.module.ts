@@ -1,6 +1,7 @@
 import { Module, Global } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ConfigService } from '@nestjs/config';
+import { KafkaService } from './kafka.service';
 
 @Global()
 @Module({
@@ -16,7 +17,7 @@ import { ConfigService } from '@nestjs/config';
               brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
             },
             consumer: {
-              groupId: 'notification-service-consumer', // ตั้ง groupId สำหรับ consumer
+              groupId: 'notification-service-consumer',
             },
             producer: {
               allowAutoTopicCreation: true,
@@ -25,8 +26,48 @@ import { ConfigService } from '@nestjs/config';
         }),
         inject: [ConfigService],
       },
+      {
+        name: 'TICKET_SERVICE',
+        useFactory: (configService: ConfigService) => ({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: 'notification-to-ticket-client',
+              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+            },
+          },
+        }),
+        inject: [ConfigService],
+      },
+      {
+        name: 'USER_SERVICE',
+        useFactory: (configService: ConfigService) => ({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: 'notification-to-user-client',
+              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+            },
+          },
+        }),
+        inject: [ConfigService],
+      },
+      {
+        name: 'AUTH_SERVICE',
+        useFactory: (configService: ConfigService) => ({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: 'notification-to-auth-client',
+              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+            },
+          },
+        }),
+        inject: [ConfigService],
+      }
     ]),
   ],
-  exports: [ClientsModule],
+  providers: [KafkaService],
+  exports: [ClientsModule, KafkaService],
 })
 export class KafkaModule {}

@@ -1,59 +1,97 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger, OnModuleInit, Inject } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { UpdateNotificationDto } from './dto/update-notification.dto';
-import { InjectRepository } from '@nestjs/typeorm';
 import { Notification, NotificationType } from './entities/notification.entity';
-import { Repository } from 'typeorm';
-import { Users } from '../users/entities/user.entity';
-import { Ticket } from '../ticket/entities/ticket.entity';
-import { TicketStatus } from '../ticket_status/entities/ticket_status.entity';
-import { TicketAssigned } from '../ticket_assigned/entities/ticket_assigned.entity';
 import { MailerService } from '@nestjs-modules/mailer';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
+import { ClientKafka } from '@nestjs/microservices';
+import { lastValueFrom, timeout, catchError, of } from 'rxjs';
 
+// สร้าง Simplified Entities สำหรับ Notification Service
 @Injectable()
-export class NotificationService {
+export class NotificationService implements OnModuleInit {
+  private readonly logger = new Logger(NotificationService.name);
+
   constructor(
     @InjectRepository(Notification)
     private readonly notiRepo: Repository<Notification>,
-    @InjectRepository(Users)
-    private readonly userRepo: Repository<Users>,
-    @InjectRepository(Ticket)
-    private readonly ticketRepo: Repository<Ticket>,
-    @InjectRepository(TicketStatus)
-    private readonly statusRepo: Repository<TicketStatus>,
-    @InjectRepository(TicketAssigned)
-    private readonly ticketAssignedRepo: Repository<TicketAssigned>,
-    
-    private readonly mailerService: MailerService
+    @Inject('TICKET_SERVICE') private readonly ticketClient: ClientKafka,
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
+    @Inject('AUTH_SERVICE') private readonly authClient: ClientKafka,
+    private readonly mailerService: MailerService,
+    private readonly kafkaService: KafkaService,
   ) {}
+
+  async onModuleInit() {
+    // Subscribe to response patterns ที่เราจะใช้
+    this.ticketClient.subscribeToResponseOf('ticket.find_by_no');
+    this.ticketClient.subscribeToResponseOf('ticket.find_one');
+    this.userClient.subscribeToResponseOf('user.find_one');
+    this.userClient.subscribeToResponseOf('user.get_supporters');
+    this.authClient.subscribeToResponseOf('auth.validate_token');
+    
+    await this.ticketClient.connect();
+    await this.userClient.connect();
+    await this.authClient.connect();
+    
+    this.logger.log('All service clients connected');
+  }
 
   // ✅ สร้างการแจ้งเตือนสำหรับการเปลี่ยนแปลงสถานะ (สำหรับผู้แจ้ง)
   async createStatusChangeNotification(ticketNo: string, statusId: number) {
     try {
-      const ticket = await this.ticketRepo.findOne({
-        where: { ticket_no: ticketNo }
-      });
-
-      if (!ticket) {
-        throw new NotFoundException(`Ticket with ID ${ticketNo} not found`);
+      // Validate input
+      if (!ticketNo || !statusId) {
+        throw new Error('ticketNo และ statusId จำเป็น');
       }
 
-      const status = await this.statusRepo.findOne({
-        where: { id: statusId }
-      });
+      // Get ticket info from Ticket Service
+      const ticketResponse = await lastValueFrom(
+        this.ticketClient.send('ticket.find_by_no', { ticketNo }).pipe(
+          timeout(5000),
+          catchError(error => {
+            this.logger.error('Error calling ticket service:', error);
+            return of({ success: false, message: 'ไม่สามารถเชื่อมต่อ ticket service ได้' });
+          })
+        )
+      );
 
-      if (!status) {
-        throw new NotFoundException(`Status with ID ${statusId} not found`);
+      if (!ticketResponse.success || !ticketResponse.data) {
+        throw new NotFoundException(`ไม่พบ ticket หมายเลข ${ticketNo}`);
       }
 
-      // ✅ กำหนด languageId = 1
-      const languageId = 1;
-      const statusName = await this.statusRepo
-        .createQueryBuilder('ts')
-        .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = ts.id AND tsl.language_id = :lang', { lang: languageId })
-        .select('COALESCE(tsl.name, ts.name)', 'name')
-        .where('ts.id = :statusId', { statusId })
-        .getRawOne();
+      const ticket = ticketResponse.data;
+
+      // Get user info from User Service
+      const userResponse = await lastValueFrom(
+        this.userClient.send('user.find_one', { id: ticket.create_by }).pipe(
+          timeout(5000),
+          catchError(error => {
+            this.logger.error('Error calling user service:', error);
+            return of({ success: false });
+          })
+        )
+      );
+
+      if (!userResponse.success) {
+        this.logger.warn(`User not found for ticket creator: ${ticket.create_by}`);
+        return { success: false, message: 'ไม่พบข้อมูลผู้ใช้' };
+      }
+
+      // Get status info from Ticket Service
+      const statusResponse = await lastValueFrom(
+        this.ticketClient.send('ticket.get_status', { id: statusId }).pipe(
+          timeout(5000),
+          catchError(error => {
+            this.logger.error('Error calling status service:', error);
+            return of({ success: false });
+          })
+        )
+      );
+
+      const statusName = statusResponse.success ? statusResponse.data?.name : 'ไม่ระบุ';
 
       // ✅ สร้าง notification
       const notification = this.notiRepo.create({
@@ -61,189 +99,303 @@ export class NotificationService {
         user_id: ticket.create_by,
         status_id: statusId,
         notification_type: NotificationType.STATUS_CHANGE,
-        title: `อัพเดทสถานะ: #${ticket.id}`,
-        message: `เรื่องของคุณได้รับการอัพเดทสถานะเป็น: ${statusName?.name || 'ไม่ระบุ'}`,
+        title: `อัพเดทสถานะ: #${ticket.ticket_no}`,
+        message: `เรื่องของคุณได้รับการอัพเดทสถานะเป็น: ${statusName}`,
         is_read: false,
-        email_sent: false
+        email_sent: false,
+        create_date: new Date(),
       });
 
       const savedNotification = await this.notiRepo.save(notification);
 
       // ส่ง email
-      await this.sendEmailNotification(savedNotification);
+      await this.sendEmailNotification(savedNotification, userResponse.data, ticket);
 
-      return savedNotification;
+      // Emit event
+      await this.kafkaService.emitNotificationCreated({
+        notificationId: savedNotification.id,
+        ticketNo,
+        userId: ticket.create_by,
+        type: NotificationType.STATUS_CHANGE,
+        timestamp: new Date(),
+      });
+
+      this.logger.log(`✅ Status change notification created for ticket ${ticketNo}`);
+
+      return {
+        success: true,
+        data: savedNotification,
+      };
     } catch (error) {
-      console.error('Error creating status change notification:', error);
-      throw error;
+      this.logger.error('❌ Error creating status change notification:', error.message);
+      return {
+        success: false,
+        message: error.message,
+      };
     }
   }
 
   // ✅ สร้างการแจ้งเตือนเรื่องใหม่ (สำหรับ supporter)
   async createNewTicketNotification(ticketNo: string) {
     try {
-      const ticket = await this.ticketRepo.findOne({
-        where: { ticket_no: ticketNo }
-      });
-
-      if (!ticket) {
-        throw new NotFoundException(`Ticket with ID ${ticketNo} not found`);
+      // Validate input
+      if (!ticketNo) {
+        throw new Error('ticketNo จำเป็น');
       }
 
-      // หา supporters ที่ต้องได้รับการแจ้งเตือน
-      const supporterRoleIds = [5, 6, 7, 8, 9, 10, 13];
-      
-      const supporterUserIds = await this.userRepo
-        .createQueryBuilder('user')
-        .select('DISTINCT user.id', 'user_id')
-        .innerJoin('user_allow_role', 'uar', 'uar.user_id = user.id')
-        .innerJoin('master_role', 'ms', 'ms.id = uar.role_id')
-        .where('ms.id IN (:...supporterRoleIds)', { supporterRoleIds })
-        .getRawMany();
+      // Get ticket info
+      const ticketResponse = await lastValueFrom(
+        this.ticketClient.send('ticket.find_by_no', { ticketNo }).pipe(
+          timeout(5000),
+          catchError(error => {
+            this.logger.error('Error calling ticket service:', error);
+            return of({ success: false, message: 'ไม่สามารถเชื่อมต่อ ticket service ได้' });
+          })
+        )
+      );
 
-      if (supporterUserIds.length === 0) {
-        console.warn('No supporters found for notification');
-        return [];
+      if (!ticketResponse.success || !ticketResponse.data) {
+        throw new NotFoundException(`ไม่พบ ticket หมายเลข ${ticketNo}`);
       }
 
-      const userIds = supporterUserIds.map(u => u.user_id);
-      const supporters = await this.userRepo.findByIds(userIds);
+      const ticket = ticketResponse.data;
+
+      // Get supporters from User Service
+      const supportersResponse = await lastValueFrom(
+        this.userClient.send('user.get_supporters', {}).pipe(
+          timeout(5000),
+          catchError(error => {
+            this.logger.error('Error calling user service for supporters:', error);
+            return of({ success: false, data: [] });
+          })
+        )
+      );
+
+      const supporters = supportersResponse.success ? supportersResponse.data : [];
+
+      if (supporters.length === 0) {
+        this.logger.warn('No supporters found for notification');
+        return { success: false, message: 'ไม่พบ supporters' };
+      }
 
       const notifications: Notification[] = [];
 
       for (const supporter of supporters) {
+        // Check if notification already exists
+        const existing = await this.notiRepo.findOne({
+          where: {
+            ticket_no: ticketNo,
+            user_id: supporter.id,
+            notification_type: NotificationType.NEW_TICKET,
+          },
+        });
+
+        if (existing) {
+          this.logger.log(`Notification already exists for supporter ${supporter.id}`);
+          continue;
+        }
+
         const notification = this.notiRepo.create({
           ticket_no: ticketNo,
           user_id: supporter.id,
           notification_type: NotificationType.NEW_TICKET,
-          title: `เรื่องใหม่: #${ticket.id}`,
-          message: `มีเรื่องใหม่ที่ต้องการการดำเนินการ - ${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}`,
+          title: `เรื่องใหม่: #${ticket.ticket_no}`,
+          message: `มีเรื่องใหม่ที่ต้องการการดำเนินการ - ${ticket.issue_description || 'ไม่มีหัวข้อ'}`,
           is_read: false,
-          email_sent: false
+          email_sent: false,
+          create_date: new Date(),
         });
 
         const savedNotification = await this.notiRepo.save(notification);
         notifications.push(savedNotification);
 
         // ส่ง email
-        await this.sendEmailNotification(savedNotification);
+        await this.sendEmailNotification(savedNotification, supporter, ticket);
       }
 
-      console.log(`✅ Created ${notifications.length} new ticket notifications`);
-      return notifications;
+      // Emit event
+      await this.kafkaService.emitNotificationCreated({
+        notificationCount: notifications.length,
+        ticketNo,
+        type: NotificationType.NEW_TICKET,
+        timestamp: new Date(),
+      });
+
+      this.logger.log(`✅ Created ${notifications.length} new ticket notifications`);
+
+      return {
+        success: true,
+        data: notifications,
+        count: notifications.length,
+      };
     } catch (error) {
-      console.error('Error creating new ticket notification:', error);
-      throw error;
+      this.logger.error('❌ Error creating new ticket notification:', error.message);
+      return {
+        success: false,
+        message: error.message,
+      };
     }
   }
 
   // ✅ สร้างการแจ้งเตือนการมอบหมายงาน (สำหรับ supporter)
   async createAssignmentNotification(ticketNo: string, assignedUserId: number) {
     try {
-      const ticket = await this.ticketRepo.findOne({
-        where: { ticket_no: ticketNo }
-      });
-
-      if (!ticket) {
-        throw new NotFoundException(`Ticket with ID ${ticketNo} not found`);
+      // Validate input
+      if (!ticketNo || !assignedUserId) {
+        throw new Error('ticketNo และ assignedUserId จำเป็น');
       }
 
-      const assignedUser = await this.userRepo.findOne({
-        where: { id: assignedUserId }
+      if (assignedUserId <= 0) {
+        throw new Error('assignedUserId ต้องมากกว่า 0');
+      }
+
+      // Get ticket info
+      const ticketResponse = await lastValueFrom(
+        this.ticketClient.send('ticket.find_by_no', { ticketNo }).pipe(
+          timeout(5000),
+          catchError(error => {
+            this.logger.error('Error calling ticket service:', error);
+            return of({ success: false });
+          })
+        )
+      );
+
+      if (!ticketResponse.success || !ticketResponse.data) {
+        throw new NotFoundException(`ไม่พบ ticket หมายเลข ${ticketNo}`);
+      }
+
+      const ticket = ticketResponse.data;
+
+      // Get assigned user info from User Service
+      const userResponse = await lastValueFrom(
+        this.userClient.send('user.find_one', { id: assignedUserId }).pipe(
+          timeout(5000),
+          catchError(error => {
+            this.logger.error('Error calling user service:', error);
+            return of({ success: false });
+          })
+        )
+      );
+
+      if (!userResponse.success || !userResponse.data) {
+        throw new NotFoundException(`ไม่พบผู้ใช้ ID ${assignedUserId}`);
+      }
+
+      const assignedUser = userResponse.data;
+
+      // Check if notification already exists
+      const existing = await this.notiRepo.findOne({
+        where: {
+          ticket_no: ticketNo,
+          user_id: assignedUserId,
+          notification_type: NotificationType.ASSIGNMENT,
+        },
       });
 
-      if (!assignedUser) {
-        throw new NotFoundException(`User with ID ${assignedUserId} not found`);
+      if (existing) {
+        this.logger.log(`Assignment notification already exists for user ${assignedUserId}`);
+        return { success: true, data: existing, message: 'การแจ้งเตือนมีอยู่แล้ว' };
       }
 
       const notification = this.notiRepo.create({
         ticket_no: ticketNo,
         user_id: assignedUserId,
         notification_type: NotificationType.ASSIGNMENT,
-        title: `มอบหมายงาน: #${ticket.id}`,
-        message: `คุณได้รับมอบหมายงานใหม่: ${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}`,
+        title: `มอบหมายงาน: #${ticket.ticket_no}`,
+        message: `คุณได้รับมอบหมายงานใหม่: ${ticket.issue_description || 'ไม่มีหัวข้อ'}`,
         is_read: false,
-        email_sent: false
+        email_sent: false,
+        create_date: new Date(),
       });
 
       const savedNotification = await this.notiRepo.save(notification);
 
       // ส่ง email
-      await this.sendEmailNotification(savedNotification);
+      await this.sendEmailNotification(savedNotification, assignedUser, ticket);
 
-      console.log(`✅ Created assignment notification for user ${assignedUserId}`);
-      return savedNotification;
+      // Emit event
+      await this.kafkaService.emitNotificationCreated({
+        notificationId: savedNotification.id,
+        ticketNo,
+        userId: assignedUserId,
+        type: NotificationType.ASSIGNMENT,
+        timestamp: new Date(),
+      });
+
+      this.logger.log(`✅ Assignment notification created for user ${assignedUserId}`);
+
+      return {
+        success: true,
+        data: savedNotification,
+      };
     } catch (error) {
-      console.error('Error creating assignment notification:', error);
-      throw error;
+      this.logger.error('❌ Error creating assignment notification:', error.message);
+      return {
+        success: false,
+        message: error.message,
+      };
     }
   }
 
   // ✅ ส่ง email notification
-  private async sendEmailNotification(notification: Notification) {
+  private async sendEmailNotification(notification: Notification, user: any, ticket: any) {
     try {
+      // Validate email
+      if (!user?.email) {
+        this.logger.warn('User email not found for notification:', notification.id);
+        return false;
+      }
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(user.email)) {
+        this.logger.warn('Invalid email format:', user.email);
+        return false;
+      }
+
       let emailSent = false;
 
       switch (notification.notification_type) {
         case NotificationType.STATUS_CHANGE:
-          emailSent = await this.sendStatusChangeEmail(notification);
+          emailSent = await this.sendStatusChangeEmail(notification, user, ticket);
           break;
         case NotificationType.NEW_TICKET:
-          emailSent = await this.sendNewTicketEmail(notification);
+          emailSent = await this.sendNewTicketEmail(notification, user, ticket);
           break;
         case NotificationType.ASSIGNMENT:
-          emailSent = await this.sendAssignmentEmail(notification);
+          emailSent = await this.sendAssignmentEmail(notification, user, ticket);
           break;
+        default:
+          this.logger.warn(`Unknown notification type: ${notification.notification_type}`);
+          return false;
       }
 
       if (emailSent) {
         // อัพเดทสถานะการส่ง email
         await this.notiRepo.update(notification.id, {
           email_sent: true,
-          email_sent_at: new Date()
+          email_sent_at: new Date(),
+        });
+
+        // Emit email sent event
+        await this.kafkaService.emitEmailSent({
+          notificationId: notification.id,
+          email: user.email,
+          type: notification.notification_type,
+          timestamp: new Date(),
         });
       }
+
+      return emailSent;
     } catch (error) {
-      console.error('Failed to send email notification:', error);
+      this.logger.error('Failed to send email notification:', error);
+      return false;
     }
   }
 
-  // ✅ ส่งอีเมลการเปลี่ยนแปลงสถานะ (สำหรับผู้แจ้ง)
-  private async sendStatusChangeEmail(notification: Notification): Promise<boolean> {
+  // ✅ ส่งอีเมลการเปลี่ยนแปลงสถานะ
+  private async sendStatusChangeEmail(notification: Notification, user: any, ticket: any): Promise<boolean> {
     try {
-      // Load related entities if not already loaded
-      const ticket = notification.ticket || await this.ticketRepo.findOne({
-        where: { ticket_no: notification.ticket_no }
-      });
-
-      const user = notification.user || await this.userRepo.findOne({
-        where: { id: notification.user_id }
-      });
-
-      const status = notification.status || (notification.status_id ? await this.statusRepo.findOne({
-        where: { id: notification.status_id }
-      }) : null);
-
-      if (!user?.email || !ticket) {
-        console.warn('User email or ticket not found for notification:', notification.id);
-        return false;
-      }
-
-      // ✅ ดึง status name จาก ticket_status_language
-      let statusName = 'ไม่ระบุ';
-      if (status && notification.status_id) {
-        const languageId = 1; // สมมติว่าใช้ภาษาไทย = 1
-        const statusLang = await this.statusRepo
-          .createQueryBuilder('ts')
-          .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = ts.id AND tsl.language_id = :lang', { lang: languageId })
-          .select('COALESCE(tsl.name, ts.name)', 'name')
-          .where('ts.id = :statusId', { statusId: notification.status_id })
-          .getRawOne();
-        
-        statusName = statusLang?.name || 'ไม่ระบุ';
-      }
-
-      const subject = `[Ticket #${ticket.ticket_no}] อัพเดทสถานะ: ${ticket.categories_id || 'ไม่มีหัวข้อ'}`;
+      const subject = `[Ticket #${ticket.ticket_no}] อัพเดทสถานะ: ${ticket.issue_description || 'ไม่มีหัวข้อ'}`;
       
       const htmlContent = `
         <!DOCTYPE html>
@@ -257,7 +409,7 @@ export class NotificationService {
             <h2 style="color: #2c3e50;">🎫 อัพเดทสถานะ Ticket</h2>
             
             <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <p><strong>เรียน:</strong> คุณ${user.create_by || user.email}</p>
+              <p><strong>เรียน:</strong> คุณ${user.username || user.email}</p>
               <p>ticket ของคุณได้รับการอัพเดทสถานะแล้ว</p>
             </div>
 
@@ -265,17 +417,17 @@ export class NotificationService {
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold; width: 150px;">หมายเลขเรื่อง:</td>
-                  <td style="padding: 8px 0;">#${ticket.id}</td>
+                  <td style="padding: 8px 0;">#${ticket.ticket_no}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">หัวข้อ:</td>
-                  <td style="padding: 8px 0;">${ticket.categories_id || 'ไม่มีหัวข้อ'}</td>
+                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">สถานะใหม่:</td>
                   <td style="padding: 8px 0;">
                     <span style="color: #28a745; font-weight: bold; background-color: #d4edda; padding: 4px 8px; border-radius: 4px;">
-                      ${statusName}
+                      ${notification.message}
                     </span>
                   </td>
                 </tr>
@@ -309,30 +461,24 @@ export class NotificationService {
         </html>
       `;
 
-      return await this.sendEmailWithHtml(user.email, subject, htmlContent);
+      await this.mailerService.sendMail({
+        to: user.email,
+        subject: subject,
+        html: htmlContent,
+      });
+
+      this.logger.log(`✅ Status change email sent to: ${user.email}`);
+      return true;
     } catch (error) {
-      console.error('Error sending status change email:', error);
+      this.logger.error('Error sending status change email:', error);
       return false;
     }
   }
 
   // ✅ ส่งอีเมลเรื่องใหม่ (สำหรับ supporter)
-  private async sendNewTicketEmail(notification: Notification): Promise<boolean> {
+  private async sendNewTicketEmail(notification: Notification, user: any, ticket: any): Promise<boolean> {
     try {
-      const ticket = notification.ticket || await this.ticketRepo.findOne({
-        where: { ticket_no: notification.ticket_no }
-      });
-
-      const user = notification.user || await this.userRepo.findOne({
-        where: { id: notification.user_id }
-      });
-
-      if (!user?.email || !ticket) {
-        console.warn('User email or ticket not found for notification:', notification.id);
-        return false;
-      }
-
-      const subject = `[New Ticket #${ticket.id}] เรื่องใหม่ต้องการการดำเนินการ`;
+      const subject = `[New Ticket #${ticket.ticket_no}] เรื่องใหม่ต้องการการดำเนินการ`;
       
       const htmlContent = `
         <!DOCTYPE html>
@@ -346,7 +492,7 @@ export class NotificationService {
             <h2 style="color: #dc3545;">🆕 ticket ใหม่ต้องการการดำเนินการ</h2>
             
             <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;">
-              <p><strong>เรียน:</strong> คุณ${user.create_by || user.email}</p>
+              <p><strong>เรียน:</strong> คุณ${user.username || user.email}</p>
               <p>มี ticket ใหม่ที่ต้องการการดำเนินการ กรุณาตรวจสอบ</p>
             </div>
 
@@ -354,15 +500,11 @@ export class NotificationService {
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold; width: 150px;">หมายเลขเรื่อง:</td>
-                  <td style="padding: 8px 0;">#${ticket.id}</td>
+                  <td style="padding: 8px 0;">#${ticket.ticket_no}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">หัวข้อ:</td>
-                  <td style="padding: 8px 0;">${ticket.categories_id || 'ไม่มีหัวข้อ'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px 0; font-weight: bold;">รายละเอียด:</td>
-                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีรายละเอียด'}</td>
+                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">ผู้แจ้ง:</td>
@@ -370,7 +512,7 @@ export class NotificationService {
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">วันที่แจ้ง:</td>
-                  <td style="padding: 8px 0;">${ticket.create_date?.toLocaleDateString('th-TH') || new Date().toLocaleDateString('th-TH')}</td>
+                  <td style="padding: 8px 0;">${new Date().toLocaleDateString('th-TH')}</td>
                 </tr>
               </table>
             </div>
@@ -401,30 +543,24 @@ export class NotificationService {
         </html>
       `;
 
-      return await this.sendEmailWithHtml(user.email, subject, htmlContent);
+      await this.mailerService.sendMail({
+        to: user.email,
+        subject: subject,
+        html: htmlContent,
+      });
+
+      this.logger.log(`✅ New ticket email sent to: ${user.email}`);
+      return true;
     } catch (error) {
-      console.error('Error sending new ticket email:', error);
+      this.logger.error('Error sending new ticket email:', error);
       return false;
     }
   }
 
   // ✅ ส่งอีเมลการมอบหมายงาน
-  private async sendAssignmentEmail(notification: Notification): Promise<boolean> {
+  private async sendAssignmentEmail(notification: Notification, user: any, ticket: any): Promise<boolean> {
     try {
-      const ticket = notification.ticket || await this.ticketRepo.findOne({
-        where: { ticket_no: notification.ticket_no }
-      });
-
-      const user = notification.user || await this.userRepo.findOne({
-        where: { id: notification.user_id }
-      });
-
-      if (!user?.email || !ticket) {
-        console.warn('User email or ticket not found for notification:', notification.id);
-        return false;
-      }
-
-      const subject = `[Assignment #${ticket.id}] คุณได้รับมอบหมายงานใหม่`;
+      const subject = `[Assignment #${ticket.ticket_no}] คุณได้รับมอบหมายงานใหม่`;
       
       const htmlContent = `
         <!DOCTYPE html>
@@ -438,7 +574,7 @@ export class NotificationService {
             <h2 style="color: #6f42c1;">👤 คุณได้รับมอบหมายงานใหม่</h2>
             
             <div style="background-color: #e7e3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6f42c1;">
-              <p><strong>เรียน:</strong> คุณ${user.create_by || user.email}</p>
+              <p><strong>เรียน:</strong> คุณ${user.username || user.email}</p>
               <p>คุณได้รับมอบหมายให้ดูแลเรื่องนี้ กรุณาดำเนินการ</p>
             </div>
 
@@ -446,15 +582,11 @@ export class NotificationService {
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold; width: 150px;">หมายเลขเรื่อง:</td>
-                  <td style="padding: 8px 0;">#${ticket.id}</td>
+                  <td style="padding: 8px 0;">#${ticket.ticket_no}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">หัวข้อ:</td>
-                  <td style="padding: 8px 0;">${ticket.categories_id || 'ไม่มีหัวข้อ'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px 0; font-weight: bold;">รายละเอียด:</td>
-                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีรายละเอียด'}</td>
+                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">ผู้แจ้ง:</td>
@@ -501,34 +633,16 @@ export class NotificationService {
         </html>
       `;
 
-      return await this.sendEmailWithHtml(user.email, subject, htmlContent);
-    } catch (error) {
-      console.error('Error sending assignment email:', error);
-      return false;
-    }
-  }
-
-  // ✅ เพิ่ม method สำหรับส่ง HTML email
-  private async sendEmailWithHtml(to: string, subject: string, htmlContent: string): Promise<boolean> {
-    try {
-      // ตรวจสอบ email format
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(to)) {
-        console.warn('Invalid email format:', to);
-        return false;
-      }
-
-      // ส่งอีเมลด้วย MailerService
       await this.mailerService.sendMail({
-        to: to,
+        to: user.email,
         subject: subject,
         html: htmlContent,
       });
 
-      console.log(`✅ HTML Email sent successfully to: ${to}`);
+      this.logger.log(`✅ Assignment email sent to: ${user.email}`);
       return true;
     } catch (error) {
-      console.error('Failed to send HTML email:', error);
+      this.logger.error('Error sending assignment email:', error);
       return false;
     }
   }
@@ -536,9 +650,9 @@ export class NotificationService {
   // ✅ ดึงการแจ้งเตือนของผู้ใช้
   async getUserNotifications(userId: number, page: number = 1, limit: number = 20) {
     try {
-      // ตรวจสอบ parameters
+      // Validate input
       if (!userId || userId <= 0) {
-        throw new Error('Invalid user ID');
+        return { success: false, message: 'Invalid user ID' };
       }
 
       if (page < 1) page = 1;
@@ -546,93 +660,132 @@ export class NotificationService {
 
       const [notifications, total] = await this.notiRepo.findAndCount({
         where: { user_id: userId },
-        relations: ['user', 'ticket', 'status'],
         order: { create_date: 'DESC' },
         skip: (page - 1) * limit,
-        take: limit
+        take: limit,
       });
 
       return {
-        notifications,
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
+        success: true,
+        data: {
+          notifications,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+          },
+        },
       };
     } catch (error) {
-      console.error('Error getting user notifications:', error);
-      throw error;
+      this.logger.error('❌ Error getting user notifications:', error.message);
+      return { success: false, message: error.message };
     }
   }
 
   // ✅ ทำเครื่องหมายว่าอ่านแล้ว
   async markAsRead(notificationId: number, userId: number) {
     try {
+      // Validate input
+      if (!notificationId || notificationId <= 0) {
+        return { success: false, message: 'Invalid notification ID' };
+      }
+
+      if (!userId || userId <= 0) {
+        return { success: false, message: 'Invalid user ID' };
+      }
+
       const notification = await this.notiRepo.findOne({
-        where: { id: notificationId, user_id: userId }
+        where: { id: notificationId, user_id: userId },
       });
 
       if (!notification) {
-        throw new NotFoundException('Notification not found or access denied');
+        return { success: false, message: 'Notification not found or access denied' };
       }
 
       // ถ้าอ่านแล้วก็ return เลย
       if (notification.is_read) {
-        return notification;
+        return { success: true, data: notification, message: 'Already read' };
       }
 
       // อัพเดทสถานะ
       await this.notiRepo.update(notificationId, {
         is_read: true,
-        read_at: new Date()
+        read_at: new Date(),
       });
 
-      return await this.notiRepo.findOne({
+      const updatedNotification = await this.notiRepo.findOne({
         where: { id: notificationId },
-        relations: ['user', 'ticket', 'status']
       });
+
+      // Emit event
+      await this.kafkaService.emitNotificationRead({
+        notificationId,
+        userId,
+        timestamp: new Date(),
+      });
+
+      this.logger.log(`✅ Notification marked as read: ${notificationId}`);
+
+      return { success: true, data: updatedNotification };
     } catch (error) {
-      console.error('Error marking notification as read:', error);
-      throw error;
+      this.logger.error('❌ Error marking notification as read:', error.message);
+      return { success: false, message: error.message };
     }
   }
 
   // ✅ ทำเครื่องหมายทั้งหมดว่าอ่านแล้ว
   async markAllAsRead(userId: number) {
     try {
+      // Validate input
+      if (!userId || userId <= 0) {
+        return { success: false, message: 'Invalid user ID' };
+      }
+
       const result = await this.notiRepo.update(
         { user_id: userId, is_read: false },
         { is_read: true, read_at: new Date() }
       );
 
-      return { updated: result.affected || 0 };
+      const affectedRows = result.affected || 0;
+
+      this.logger.log(`✅ Marked ${affectedRows} notifications as read for user ${userId}`);
+
+      return { success: true, data: { updated: affectedRows } };
     } catch (error) {
-      console.error('Error marking all notifications as read:', error);
-      throw error;
+      this.logger.error('❌ Error marking all notifications as read:', error.message);
+      return { success: false, message: error.message };
     }
   }
 
   // ✅ นับจำนวนการแจ้งเตือนที่ยังไม่ได้อ่าน
-  async getUnreadCount(userId: number): Promise<number> {
+  async getUnreadCount(userId: number) {
     try {
       if (!userId || userId <= 0) {
-        return 0;
+        return { success: false, message: 'Invalid user ID' };
       }
 
-      return await this.notiRepo.count({
-        where: { user_id: userId, is_read: false }
+      const count = await this.notiRepo.count({
+        where: { user_id: userId, is_read: false },
       });
+
+      return { success: true, data: { count } };
     } catch (error) {
-      console.error('Error getting unread count:', error);
-      return 0;
+      this.logger.error('❌ Error getting unread count:', error.message);
+      return { success: false, message: error.message };
     }
   }
 
   // ✅ ดึงการแจ้งเตือนตามประเภท
   async getNotificationsByType(userId: number, type: NotificationType, page: number = 1, limit: number = 20) {
     try {
+      // Validate input
       if (!userId || userId <= 0) {
-        throw new Error('Invalid user ID');
+        return { success: false, message: 'Invalid user ID' };
+      }
+
+      if (!Object.values(NotificationType).includes(type)) {
+        return { success: false, message: 'Invalid notification type' };
       }
 
       if (page < 1) page = 1;
@@ -640,244 +793,62 @@ export class NotificationService {
 
       const [notifications, total] = await this.notiRepo.findAndCount({
         where: { user_id: userId, notification_type: type },
-        relations: ['user', 'ticket', 'status'],
         order: { create_date: 'DESC' },
         skip: (page - 1) * limit,
-        take: limit
+        take: limit,
       });
 
       return {
-        notifications,
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
+        success: true,
+        data: {
+          notifications,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+          },
+        },
       };
     } catch (error) {
-      console.error('Error getting notifications by type:', error);
-      throw error;
+      this.logger.error('❌ Error getting notifications by type:', error.message);
+      return { success: false, message: error.message };
     }
   }
 
-  // ✅ find noti from id
-  async findNotificationById(id: number) {
-    return await this.notiRepo.findOne({ 
-      where: { id },
-      relations: ['user', 'ticket', 'status']
-    });
-  }
-
-  // ✅ Check if user is supporter
-  async isUserSupporter(userId: number): Promise<boolean> {
-    try {
-      const supporterRoleIds = [5, 6, 7, 8, 9, 10, 13];
-      
-      const userRole = await this.userRepo
-        .createQueryBuilder('user')
-        .innerJoin('user_allow_role', 'uar', 'uar.user_id = user.id')
-        .innerJoin('master_role', 'mr', 'mr.id = uar.role_id')
-        .where('user.id = :userId', { userId })
-        .andWhere('mr.id IN (:...supporterRoleIds)', { supporterRoleIds })
-        .getOne();
-
-      return !!userRole;
-    } catch (error) {
-      console.error('Error checking if user is supporter:', error);
-      return false;
-    }
-  }
-
-  // ✅ Check if user can access ticket
-  async canAccessTicket(userId: number, ticketNo: string): Promise<boolean> {
-    try {
-      const ticket = await this.ticketRepo.findOne({
-        where: { ticket_no: ticketNo }
-      });
-
-      if (!ticket) {
-        return false;
-      }
-
-      // Check if user is the reporter
-      if (ticket.create_by === userId) {
-        return true;
-      }
-
-      // ✅ Check if user is assigned to the ticket using query builder
-      const ticketAssignment = await this.ticketAssignedRepo
-        .createQueryBuilder('ta')
-        .where('ta.ticket_id = :ticketId', { ticketId: ticket.id })
-        .andWhere('ta.assignee = :userId', { userId })
-        .getOne();
-
-      if (ticketAssignment) {
-        return true;
-      }
-
-      // Check if user is supporter
-      const isSupporter = await this.isUserSupporter(userId);
-      return isSupporter;
-    } catch (error) {
-      console.error('Error checking ticket access:', error);
-      return false;
-    }
-  }
-
-  // ✅ Get ticket notifications
+  // ✅ ดึงการแจ้งเตือนของ ticket
   async getTicketNotifications(ticketNo: string, page: number = 1, limit: number = 20) {
     try {
+      // Validate input
+      if (!ticketNo) {
+        return { success: false, message: 'ticketNo is required' };
+      }
+
       if (page < 1) page = 1;
       if (limit < 1 || limit > 100) limit = 20;
 
       const [notifications, total] = await this.notiRepo.findAndCount({
         where: { ticket_no: ticketNo },
-        relations: ['user', 'ticket', 'status'],
         order: { create_date: 'DESC' },
         skip: (page - 1) * limit,
-        take: limit
+        take: limit,
       });
 
       return {
-        notifications,
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
+        success: true,
+        data: {
+          notifications,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+          },
+        },
       };
     } catch (error) {
-      console.error('Error getting ticket notifications:', error);
-      throw error;
-    }
-  }
-
-  // ✅ เมธอดเพิ่มเติม: ดึงรายการผู้ที่ได้รับมอบหมาย ticket
-  async getTicketAssignees(ticketId: number): Promise<Users[]> {
-    try {
-      const assignees = await this.userRepo
-        .createQueryBuilder('user')
-        .innerJoin('ticket_assigned', 'ta', 'ta.assignee = user.id')
-        .where('ta.ticket_id = :ticketId', { ticketId })
-        .getMany();
-
-      return assignees;
-    } catch (error) {
-      console.error('Error getting ticket assignees:', error);
-      return [];
-    }
-  }
-
-  // ✅ เมธอดเพิ่มเติม: ส่งการแจ้งเตือนให้ผู้ที่ได้รับมอบหมายทั้งหมด
-  async notifyAllAssignees(ticketNo: string, notificationType: NotificationType, customMessage?: string) {
-    try {
-      const ticket = await this.ticketRepo.findOne({
-        where: { ticket_no: ticketNo }
-      });
-
-      if (!ticket) {
-        throw new NotFoundException(`Ticket with number ${ticketNo} not found`);
-      }
-
-      const assignees = await this.getTicketAssignees(ticket.id);
-
-      if (assignees.length === 0) {
-        console.warn(`No assignees found for ticket ${ticketNo}`);
-        return [];
-      }
-
-      const notifications: Notification[] = [];
-
-      for (const assignee of assignees) {
-        const notification = this.notiRepo.create({
-          ticket_no: ticketNo,
-          user_id: assignee.id,
-          notification_type: notificationType,
-          title: `อัพเดท: ${ticket.ticket_no}`,
-          message: customMessage || `มีการอัพเดทในเรื่องที่คุณได้รับมอบหมาย`,
-          is_read: false,
-          email_sent: false,
-          create_date: new Date(),
-        });
-
-        const savedNotification = await this.notiRepo.save(notification);
-        notifications.push(savedNotification);
-
-        // Send email notification
-        await this.sendEmailNotification(savedNotification);
-      }
-
-      console.log(`✅ Notified ${notifications.length} assignees for ticket ${ticketNo}`);
-      return notifications;
-    } catch (error) {
-      console.error('Error notifying all assignees:', error);
-      throw error;
-    }
-  }
-
-  // ✅ เพิ่ม method สำหรับ advanced filtering
-  async getNotificationsWithFilters(
-    userId: number,
-    filters: {
-      type?: NotificationType;
-      isRead?: boolean;
-      ticketNo?: string;
-      dateFrom?: Date;
-      dateTo?: Date;
-    },
-    page: number = 1,
-    limit: number = 20
-  ) {
-    try {
-      if (page < 1) page = 1;
-      if (limit < 1 || limit > 100) limit = 20;
-
-      const queryBuilder = this.notiRepo
-        .createQueryBuilder('notification')
-        .leftJoinAndSelect('notification.user', 'user')
-        .leftJoinAndSelect('notification.ticket', 'ticket')
-        .leftJoinAndSelect('notification.status', 'status')
-        .where('notification.user_id = :userId', { userId });
-
-      // Apply filters
-      if (filters.type) {
-        queryBuilder.andWhere('notification.notification_type = :type', { type: filters.type });
-      }
-
-      if (filters.isRead !== undefined) {
-        queryBuilder.andWhere('notification.is_read = :isRead', { isRead: filters.isRead });
-      }
-
-      if (filters.ticketNo) {
-        queryBuilder.andWhere('notification.ticket_no = :ticketNo', { ticketNo: filters.ticketNo });
-      }
-
-      if (filters.dateFrom) {
-        queryBuilder.andWhere('notification.create_date >= :dateFrom', { dateFrom: filters.dateFrom });
-      }
-
-      if (filters.dateTo) {
-        queryBuilder.andWhere('notification.create_date <= :dateTo', { dateTo: filters.dateTo });
-      }
-
-      // Get total count
-      const total = await queryBuilder.getCount();
-
-      // Apply pagination and ordering
-      const notifications = await queryBuilder
-        .orderBy('notification.create_date', 'DESC')
-        .skip((page - 1) * limit)
-        .take(limit)
-        .getMany();
-
-      return {
-        notifications,
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      };
-    } catch (error) {
-      console.error('Error getting notifications with filters:', error);
-      throw error;
+      this.logger.error('❌ Error getting ticket notifications:', error.message);
+      return { success: false, message: error.message };
     }
   }
 
@@ -885,7 +856,7 @@ export class NotificationService {
   async deleteOldNotifications(daysOld: number = 90) {
     try {
       if (daysOld < 1) {
-        throw new Error('Days old must be greater than 0');
+        return { success: false, message: 'Days old must be greater than 0' };
       }
 
       const cutoffDate = new Date();
@@ -898,31 +869,119 @@ export class NotificationService {
         .where('create_date < :cutoffDate', { cutoffDate })
         .execute();
 
-      return { deleted: result.affected || 0 };
+      const deletedCount = result.affected || 0;
+
+      this.logger.log(`✅ Deleted ${deletedCount} old notifications`);
+
+      return { success: true, data: { deleted: deletedCount } };
     } catch (error) {
-      console.error('Error deleting old notifications:', error);
-      throw error;
+      this.logger.error('❌ Error deleting old notifications:', error.message);
+      return { success: false, message: error.message };
     }
   }
 
-  // ===== CRUD Methods (ตามเดิม) =====
-  create(createNotificationDto: CreateNotificationDto) {
-    return 'This action adds a new notification';
+  // ===== CRUD Methods =====
+  async create(createNotificationDto: CreateNotificationDto) {
+    try {
+      const notification = this.notiRepo.create({
+        ...createNotificationDto,
+        create_date: new Date(),
+      });
+
+      const saved = await this.notiRepo.save(notification);
+
+      this.logger.log(`✅ Notification created: ${saved.id}`);
+
+      return { success: true, data: saved };
+    } catch (error) {
+      this.logger.error('❌ Error creating notification:', error.message);
+      return { success: false, message: error.message };
+    }
   }
 
-  findAll() {
-    return `This action returns all notification`;
+  async findAll() {
+    try {
+      const notifications = await this.notiRepo.find({
+        order: { create_date: 'DESC' },
+        take: 100, // Limit for performance
+      });
+
+      return { success: true, data: notifications };
+    } catch (error) {
+      this.logger.error('❌ Error finding all notifications:', error.message);
+      return { success: false, message: error.message };
+    }
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} notification`;
+  async findOne(id: number) {
+    try {
+      if (!id || id <= 0) {
+        return { success: false, message: 'Invalid ID' };
+      }
+
+      const notification = await this.notiRepo.findOne({ where: { id } });
+
+      return {
+        success: !!notification,
+        data: notification,
+        message: notification ? 'Found' : 'Not found',
+      };
+    } catch (error) {
+      this.logger.error('❌ Error finding notification:', error.message);
+      return { success: false, message: error.message };
+    }
   }
 
-  update(id: number, updateNotificationDto: UpdateNotificationDto) {
-    return `This action updates a #${id} notification`;
+  async update(id: number, updateNotificationDto: UpdateNotificationDto) {
+    try {
+      if (!id || id <= 0) {
+        return { success: false, message: 'Invalid ID' };
+      }
+
+      const existing = await this.notiRepo.findOne({ where: { id } });
+      if (!existing) {
+        return { success: false, message: 'Notification not found' };
+      }
+
+      await this.notiRepo.update(id, {
+        ...updateNotificationDto,
+        update_date: new Date(),
+      });
+
+      const updated = await this.findOne(id);
+
+      this.logger.log(`✅ Notification updated: ${id}`);
+
+      return updated;
+    } catch (error) {
+      this.logger.error('❌ Error updating notification:', error.message);
+      return { success: false, message: error.message };
+    }
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} notification`;
+  async remove(id: number) {
+    try {
+      if (!id || id <= 0) {
+        return { success: false, message: 'Invalid ID' };
+      }
+
+      const existing = await this.notiRepo.findOne({ where: { id } });
+      if (!existing) {
+        return { success: false, message: 'Notification not found' };
+      }
+
+      const result = await this.notiRepo.delete(id);
+      const affectedRows = result.affected || 0;
+
+      this.logger.log(`✅ Notification deleted: ${id}`);
+
+      return {
+        success: affectedRows > 0,
+        message: affectedRows > 0 ? 'Deleted successfully' : 'No records deleted',
+      };
+    } catch (error) {
+      this.logger.error('❌ Error removing notification:', error.message);
+      return { success: false, message: error.message };
+    }
   }
 }

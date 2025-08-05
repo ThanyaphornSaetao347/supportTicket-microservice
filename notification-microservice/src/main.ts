@@ -1,20 +1,33 @@
 import { NestFactory } from '@nestjs/core';
-import { NotificationModule } from './notification/notification.module';
+import { ValidationPipe } from '@nestjs/common';
+import { AppModule } from './app.module';
 import { Transport, MicroserviceOptions } from '@nestjs/microservices';
 
 async function bootstrap() {
-  const app = await NestFactory.createMicroservice<MicroserviceOptions>(NotificationModule, {
+  const app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
     transport: Transport.KAFKA,
     options: {
       client: {
+        clientId: 'notification-service',
         brokers: ['localhost:9092'],
       },
       consumer: {
         groupId: 'notification-service-consumer',
       },
+      producer: {
+        allowAutoTopicCreation: true,
+      },
     },
   });
+
+  app.useGlobalPipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }));
+
   await app.listen();
-  console.log('Satisfaction microservice is running with Kafka...');
+  console.log('🔔 Notification microservice is running with Kafka...');
 }
-bootstrap();
+
+bootstrap().catch(console.error);

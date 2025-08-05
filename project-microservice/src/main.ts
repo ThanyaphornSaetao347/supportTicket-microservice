@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { ValidationPipe } from '@nestjs/common';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 
 async function bootstrap() {
@@ -7,6 +8,7 @@ async function bootstrap() {
     transport: Transport.KAFKA,
     options: {
       client: {
+        clientId: 'project-service',
         brokers: ['localhost:9092'],
       },
       consumer: {
@@ -15,7 +17,12 @@ async function bootstrap() {
     },
   });
 
+  app.useGlobalPipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }));
+
   await app.listen();
-  console.log('Project microservice is listening...');
 }
 bootstrap();
