@@ -13,7 +13,10 @@ export class TicketStatusHistory {
   status_id: number;
 
   @Column()
-  created_at: Date;
+  create_date: Date;
+
+  @Column()
+  create_by: number;
 
   @ManyToOne(() => TicketStatus, status => status.history)
   @JoinColumn({ name: 'status_id' })

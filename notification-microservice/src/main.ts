@@ -27,7 +27,7 @@ async function bootstrap() {
   }));
 
   await app.listen();
-  console.log('🔔 Notification microservice is running with Kafka...');
+  console.log('Notification microservice is running with Kafka...');
 }
 
 bootstrap().catch(console.error);

@@ -1,12 +1,7 @@
 // src/entities/ticket.entity.ts
 import { Entity, PrimaryGeneratedColumn, Column, OneToMany, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn, OneToOne } from 'typeorm';
 import { TicketAttachment } from '../../ticket_attachment/entities/ticket_attachment.entity';
-import { TicketStatusHistory } from '../../ticket_status_history/entities/ticket_status_history.entity';
 import { TicketCategory } from '../../ticket_categories/entities/ticket_category.entity';
-import { Project } from '../../project/entities/project.entity';
-import { TicketStatus } from '../../ticket_status/entities/ticket_status.entity';
-import { Satisfaction } from '../../satisfaction/entities/satisfaction.entity';
-
 @Entity('ticket')
 export class Ticket {
   @PrimaryGeneratedColumn()
@@ -69,22 +64,8 @@ export class Ticket {
 
   @OneToMany(() => TicketAttachment, attachment => attachment.ticket, { cascade: true })
   attachments: TicketAttachment[];
-
-  @OneToMany(() => TicketStatusHistory, history=> history.ticket)
-  history: TicketStatusHistory[];
-
-  @OneToOne(() => Satisfaction, satisfaction => satisfaction.ticket)
-  satisfaction: Satisfaction;
-
-  @ManyToOne(() => Project, project => project.ticket)
-  @JoinColumn({ name: 'project_id' }) // ถ้ามี field นี้
-  project: Project;
-
+  
   @ManyToOne(() => TicketCategory, category => category.ticket)
   @JoinColumn({ name: 'categories_id'})
   categories: TicketCategory
-
-  @ManyToOne(() => TicketStatus, status => status.ticket)
-  @JoinColumn({ name: 'status_id'})
-  status: TicketStatus;
 }

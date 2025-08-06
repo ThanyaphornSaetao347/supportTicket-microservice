@@ -1,23 +1,22 @@
 import { Module, Global } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ConfigService } from '@nestjs/config';
-import { KafkaService } from './kafka.service';
 
 @Global()
 @Module({
   imports: [
     ClientsModule.registerAsync([
       {
-        name: 'STATUS_SERVICE',
+        name: 'CATEGORIES_SERVICE',
         useFactory: (configService: ConfigService) => ({
           transport: Transport.KAFKA,
           options: {
             client: {
-              clientId: configService.get('KAFKA_CLIENT_ID', 'status-service'),
+              clientId: 'categories-service',
               brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
             },
             consumer: {
-              groupId: configService.get('KAFKA_GROUP_ID', 'status-service-consumer'),
+              groupId: 'categories-service-consumer'
             },
             producer: {
               allowAutoTopicCreation: true,
@@ -28,7 +27,6 @@ import { KafkaService } from './kafka.service';
       },
     ]),
   ],
-  providers: [KafkaService],
-  exports: [ClientsModule, KafkaService],
+  exports: [ClientsModule],
 })
 export class KafkaModule {}

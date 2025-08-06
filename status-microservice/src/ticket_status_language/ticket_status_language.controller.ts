@@ -1,34 +1,149 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Logger } from '@nestjs/common';
+import { MessagePattern, Payload } from '@nestjs/microservices';
 import { TicketStatusLanguageService } from './ticket_status_language.service';
-import { CreateTicketStatusLanguageDto } from './dto/create-ticket_status_language.dto';
-import { UpdateTicketStatusLanguageDto } from './dto/update-ticket_status_language.dto';
 
-@Controller('ticket-status-language')
+@Controller()
 export class TicketStatusLanguageController {
-  constructor(private readonly ticketStatusLanguageService: TicketStatusLanguageService) {}
+  private readonly logger = new Logger(TicketStatusLanguageController.name);
 
-  @Post()
-  create(@Body() createTicketStatusLanguageDto: CreateTicketStatusLanguageDto) {
-    return this.ticketStatusLanguageService.create(createTicketStatusLanguageDto);
+  constructor(private readonly statusLanguageService: TicketStatusLanguageService) {}
+
+  // ✅ รับคำขอสร้าง status language ใหม่
+  @MessagePattern('status_language.create')
+  async create(@Payload() data: {
+    status_id: number;
+    language_id: string;
+    name: string;
+  }) {
+    try {
+      this.logger.log(`📥 Received status_language.create for status ${data.status_id}, lang ${data.language_id}`);
+      
+      const result = await this.statusLanguageService.create({
+        status_id: data.status_id,
+        language_id: data.language_id,
+        name: data.name,
+      });
+      
+      return {
+        success: true,
+        message: 'Status language created successfully',
+        data: result
+      };
+    } catch (error) {
+      this.logger.error('💥 Error creating status language:', error);
+      return {
+        success: false,
+        message: 'Failed to create status language',
+        error: error.message
+      };
+    }
   }
 
-  @Get()
-  findAll() {
-    return this.ticketStatusLanguageService.findAll();
+  // ✅ รับคำขอดึงรายการ status languages ทั้งหมด
+  @MessagePattern('status_language.get_all')
+  async findAll(@Payload() data?: { status_id?: number; language_id?: string }) {
+    try {
+      this.logger.log(`📥 Received status_language.get_all`);
+      
+      const results = await this.statusLanguageService.findAll(data?.status_id, data?.language_id);
+      
+      return {
+        success: true,
+        message: 'Status languages retrieved successfully',
+        data: results
+      };
+    } catch (error) {
+      this.logger.error('💥 Error getting status languages:', error);
+      return {
+        success: false,
+        message: 'Failed to get status languages',
+        error: error.message
+      };
+    }
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.ticketStatusLanguageService.findOne(+id);
+  // ✅ รับคำขอดึง status language เฉพาะ
+  @MessagePattern('status_language.get_by_status')
+  async findByStatus(@Payload() data: { 
+    status_id: number; 
+    language_id?: string 
+  }) {
+    try {
+      this.logger.log(`📥 Received status_language.get_by_status for status ${data.status_id}`);
+      
+      const result = await this.statusLanguageService.findByStatus(
+        data.status_id, 
+        data.language_id
+      );
+      
+      return {
+        success: true,
+        message: 'Status language retrieved successfully',
+        data: result
+      };
+    } catch (error) {
+      this.logger.error('💥 Error getting status language:', error);
+      return {
+        success: false,
+        message: 'Failed to get status language',
+        error: error.message
+      };
+    }
   }
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateTicketStatusLanguageDto: UpdateTicketStatusLanguageDto) {
-    return this.ticketStatusLanguageService.update(+id, updateTicketStatusLanguageDto);
+  // ✅ รับคำขออัพเดท status language
+  @MessagePattern('status_language.update')
+  async update(@Payload() data: {
+    status_id: number;
+    language_id: string;
+    name: string;
+  }) {
+    try {
+      this.logger.log(`📥 Received status_language.update for status ${data.status_id}, lang ${data.language_id}`);
+      
+      const result = await this.statusLanguageService.update(data);
+      
+      return {
+        success: true,
+        message: 'Status language updated successfully',
+        data: result
+      };
+    } catch (error) {
+      this.logger.error('💥 Error updating status language:', error);
+      return {
+        success: false,
+        message: 'Failed to update status language',
+        error: error.message
+      };
+    }
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.ticketStatusLanguageService.remove(+id);
+  // ✅ รับคำขอลบ status language
+  @MessagePattern('status_language.delete')
+  async remove(@Payload() data: {
+    status_id: number;
+    language_id: string;
+  }) {
+    try {
+      this.logger.log(`📥 Received status_language.delete for status ${data.status_id}, lang ${data.language_id}`);
+      
+      const result = await this.statusLanguageService.remove(
+        data.status_id, 
+        data.language_id
+      );
+      
+      return {
+        success: true,
+        message: 'Status language deleted successfully',
+        data: result
+      };
+    } catch (error) {
+      this.logger.error('💥 Error deleting status language:', error);
+      return {
+        success: false,
+        message: 'Failed to delete status language',
+        error: error.message
+      };
+    }
   }
 }

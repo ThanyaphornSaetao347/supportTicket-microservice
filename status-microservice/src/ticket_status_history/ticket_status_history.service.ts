@@ -1,121 +1,113 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { CreateTicketStatusHistoryDto } from './dto/create-ticket_status_history.dto';
-import { UpdateTicketStatusHistoryDto } from './dto/update-ticket_status_history.dto';
+import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { TicketStatusHistory } from './entities/ticket_status_history.entity';
-import { Ticket } from '../ticket/entities/ticket.entity'; // ✅ เพิ่ม import
 import { Repository, DataSource } from 'typeorm';
-import { Users } from '../users/entities/user.entity';
+import { TicketStatusHistory } from './entities/ticket_status_history.entity';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
 
 @Injectable()
 export class TicketStatusHistoryService {
+  private readonly logger = new Logger(TicketStatusHistoryService.name);
+  
+  // Cache สำหรับเก็บข้อมูล user ชั่วคราว
+  private userCache = new Map<number, { name: string; email: string; cached_at: Date }>();
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 นาที
+
   constructor(
     @InjectRepository(TicketStatusHistory)
     private readonly historyRepo: Repository<TicketStatusHistory>,
     
-    // ✅ เพิ่ม Ticket repository
-    @InjectRepository(Ticket)
-    private readonly ticketRepo: Repository<Ticket>,
-
-    @InjectRepository(Users)
-    private readonly userRepo: Repository<Users>,
-    
-    // ✅ เพิ่ม DataSource สำหรับ query ที่ซับซ้อน
     private readonly dataSource: DataSource,
-  ){}
+    private readonly kafkaService: KafkaService,
+  ) {}
 
-  // ✅ บันทึก history entry ใหม่ (แก้ไขแล้ว)
+  // ✅ บันทึก history entry ใหม่
   async createHistory(createData: {
     ticket_id: number;
     status_id: number;
     create_by: number;
   }): Promise<TicketStatusHistory> {
     try {
-      console.log('📝 Creating ticket status history:', createData);
+      this.logger.log('📝 Creating ticket status history:', createData);
 
-      // ✅ Validate required fields
       if (!createData.ticket_id || !createData.status_id || !createData.create_by) {
         throw new BadRequestException('ticket_id, status_id, and create_by are required');
       }
 
-      // ✅ ตรวจสอบว่า ticket มีอยู่จริง (ใช้ ticketRepo)
-      const ticket = await this.ticketRepo.findOne({
-        where: { id: createData.ticket_id, isenabled: true }
-      });
-
-      if (!ticket) {
+      // ✅ ขอ validation ticket ผ่าน Kafka แทน direct query
+      const isTicketValid = await this.kafkaService.requestTicketValidation(createData.ticket_id);
+      if (!isTicketValid) {
         throw new NotFoundException(`Ticket with ID ${createData.ticket_id} not found`);
       }
 
-      // ✅ สร้าง entity โดยไม่ส่ง create_date (ให้ @CreateDateColumn จัดการ)
       const history = this.historyRepo.create({
         ticket_id: createData.ticket_id,
         status_id: createData.status_id,
-        create_by: createData.create_by
-        // create_date จะถูกสร้างอัตโนมัติจาก @CreateDateColumn
+        create_by: createData.create_by,
+        create_date: new Date(),
       });
 
       const savedHistory = await this.historyRepo.save(history);
       
-      console.log('✅ History saved with ID:', savedHistory.id);
+      this.logger.log('✅ History saved with ID:', savedHistory.id);
       return savedHistory;
     } catch (error) {
-      console.error('💥 Error creating ticket status history:', error);
+      this.logger.error('💥 Error creating ticket status history:', error);
       throw error;
     }
   }
 
-  // ✅ ดึง history ของ ticket โดยใช้ ticket_id โดยตรง (แก้ไขแล้ว)
+  // ✅ ดึง history ของ ticket (ปรับแล้ว - ไม่ join users table)
   async getTicketHistory(ticketId: number): Promise<any[]> {
     try {
-      console.log(`📋 Getting history for ticket ID: ${ticketId}`);
+      this.logger.log(`📋 Getting history for ticket ID: ${ticketId}`);
 
-      // ✅ ตรวจสอบว่า ticket มีอยู่จริง (ใช้ ticketRepo ที่ถูกต้อง)
-      const ticket = await this.ticketRepo.findOne({
-        where: { id: ticketId, isenabled: true }
-      });
-
-      if (!ticket) {
+      // ✅ ขอ validation ticket ผ่าน Kafka
+      const isTicketValid = await this.kafkaService.requestTicketValidation(ticketId);
+      if (!isTicketValid) {
         throw new NotFoundException(`Ticket with ID ${ticketId} not found`);
       }
 
-      console.log(`✅ Ticket found: ${ticket.ticket_no}`);
-
-      // ✅ ใช้ TypeORM QueryBuilder แทน raw query
+      // ✅ ดึง history โดยไม่ join users table
       const history = await this.historyRepo
         .createQueryBuilder('tsh')
-        .leftJoinAndSelect('tsh.status', 'ts', 'ts.isenabled = :enabled', { enabled: true })
+        .leftJoin('ticket_status', 'ts', 'ts.id = tsh.status_id AND ts.isenabled = :enabled', { enabled: true })
         .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = ts.id AND tsl.language_id = :lang', { lang: 'th' })
-        .leftJoin('users', 'u', 'u.id = tsh.create_by')
         .select([
           'tsh.id',
           'tsh.ticket_id', 
           'tsh.status_id',
           'tsh.create_by',
           'tsh.create_date',
-          'COALESCE(tsl.name, CONCAT(\'Status \', tsh.status_id)) AS status_name',
-          'CONCAT(u.firstname, \' \', u.lastname) AS created_by_name'
+          'tsh.comment',
+          'COALESCE(tsl.name, CONCAT(\'Status \', tsh.status_id)) AS status_name'
         ])
         .where('tsh.ticket_id = :ticketId', { ticketId })
         .orderBy('tsh.create_date', 'DESC')
         .getRawMany();
 
-      console.log(`✅ Found ${history.length} history records`);
-      return history;
+      // ✅ ดึงข้อมูล user แยกต่างหาก
+      const enrichedHistory = await Promise.all(
+        history.map(async (record) => {
+          const userData = await this.getUserInfo(record.create_by);
+          return {
+            ...record,
+            created_by_name: userData.name,
+            created_by_email: userData.email,
+          };
+        })
+      );
+
+      this.logger.log(`✅ Found ${history.length} history records`);
+      return enrichedHistory;
 
     } catch (error) {
-      console.error('💥 Error getting ticket history:', error);
+      this.logger.error('💥 Error getting ticket history:', error);
       throw error;
     }
   }
 
-  // ✅ เพิ่ม method ใหม่สำหรับดึง current status ของ ticket
-  async getCurrentTicketStatus(ticketId: number): Promise<{
-    ticket_id: number;
-    current_status_id: number;
-    current_status_name: string;
-    last_updated: Date;
-  } | null> {
+  // ✅ ดึง current status ของ ticket (ปรับแล้ว)
+  async getCurrentTicketStatus(ticketId: number): Promise<any | null> {
     try {
       const result = await this.historyRepo
         .createQueryBuilder('tsh')
@@ -126,44 +118,44 @@ export class TicketStatusHistoryService {
           'tsh.create_by',
           'tsh.create_date',
           'tsh.comment',
-          `COALESCE(tsl.name, CONCAT('Status ', tsh.status_id)) as status_name`,
-          `CONCAT(COALESCE(u.firstname, ''), ' ', COALESCE(u.lastname, '')) as created_by_name`,
-          'u.email as created_by_email',
+          `COALESCE(tsl.name, CONCAT('Status ', tsh.status_id)) as status_name`
         ])
         .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = tsh.status_id AND tsl.language_id = :lang', {
           lang: 'th',
         })
-        .leftJoin('users', 'u', 'u.id = tsh.create_by')
         .where('tsh.ticket_id = :ticketId', { ticketId })
-        .orderBy('tsh.create_date', 'ASC')
-        .getRawMany();
+        .orderBy('tsh.create_date', 'DESC')
+        .limit(1)
+        .getRawOne();
 
-      return result.length > 0 ? result[0] : null;
+      if (result) {
+        // ✅ ดึงข้อมูล user แยกต่างหาก
+        const userData = await this.getUserInfo(result.create_by);
+        result.created_by_name = userData.name;
+        result.created_by_email = userData.email;
+      }
+
+      return result || null;
     } catch (error) {
-      console.error('Error getting current ticket status:', error);
+      this.logger.error('Error getting current ticket status:', error);
       return null;
     }
   }
 
-  // ✅ เพิ่ม method สำหรับ debug การเปลี่ยนสถานะ
-  async debugStatusChange(ticketId: number): Promise<{
-    current_ticket_status: any;
-    recent_history: any[];
-    status_mismatch: boolean;
-  }> {
+  // ✅ Debug status change (ปรับแล้ว)
+  async debugStatusChange(ticketId: number) {
     try {
-      console.log(`🔍 Debug status change for ticket ${ticketId}`);
+      this.logger.log(`🔍 Debug status change for ticket ${ticketId}`);
 
-      // ดึงสถานะปัจจุบันของ ticket
       const currentStatus = await this.getCurrentTicketStatus(ticketId);
       
-      // ดึง history ล่าสุด 5 รายการ
       const recentHistory = await this.historyRepo
         .createQueryBuilder('tsh')
         .select([
           'tsh.id',
           'tsh.status_id',
           'tsh.create_date',
+          'tsh.create_by',
           `COALESCE(tsl.name, CONCAT('Status ', tsh.status_id)) AS status_name`,
         ])
         .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = tsh.status_id AND tsl.language_id = :lang', {
@@ -174,37 +166,47 @@ export class TicketStatusHistoryService {
         .limit(5)
         .getRawMany();
 
-      // ตรวจสอบว่าสถานะใน ticket table ตรงกับ history ล่าสุดหรือไม่
+      // ✅ ขอข้อมูล ticket status ผ่าน Kafka (ใช้แทน direct query)
+      const ticketStatusResponse = await this.kafkaService.requestTicketInfo(ticketId);
+      const currentTicketStatus = ticketStatusResponse?.status_id || null;
+
       const latestHistoryStatus = recentHistory.length > 0 ? recentHistory[0].status_id : null;
-      const statusMismatch = currentStatus && latestHistoryStatus && 
-                           currentStatus.current_status_id !== latestHistoryStatus;
+      const statusMismatch = currentTicketStatus && latestHistoryStatus && 
+                           currentTicketStatus !== latestHistoryStatus;
+
+      // ✅ Enrich history with user data
+      const enrichedHistory = await Promise.all(
+        recentHistory.map(async (record) => {
+          const userData = await this.getUserInfo(record.create_by);
+          return {
+            ...record,
+            created_by_name: userData.name,
+          };
+        })
+      );
 
       const debugInfo = {
         current_ticket_status: currentStatus,
-        recent_history: recentHistory,
+        ticket_status_id: currentTicketStatus,
+        latest_history_status_id: latestHistoryStatus,
+        recent_history: enrichedHistory,
         status_mismatch: statusMismatch
       };
 
-      console.log('🔍 Debug info:', debugInfo);
+      this.logger.log('🔍 Debug info:', debugInfo);
       return debugInfo;
 
     } catch (error) {
-      console.error('Error in debug status change:', error);
+      this.logger.error('Error in debug status change:', error);
       throw error;
     }
   }
 
-  // ✅ เพิ่ม method สำหรับซิงค์สถานะ
-  async syncTicketStatus(ticketId: number): Promise<{
-    success: boolean;
-    message: string;
-    old_status: number;
-    new_status: number;
-  }> {
+  // ✅ ซิงค์ status (ปรับแล้ว)
+  async syncTicketStatus(ticketId: number) {
     try {
-      console.log(`🔄 Syncing status for ticket ${ticketId}`);
+      this.logger.log(`🔄 Syncing status for ticket ${ticketId}`);
 
-      // ดึงสถานะล่าสุดจาก history
       const latestHistory = await this.dataSource.query(`
         SELECT status_id, create_date
         FROM ticket_status_history
@@ -224,91 +226,85 @@ export class TicketStatusHistoryService {
 
       const latestStatusId = latestHistory[0].status_id;
 
-      // ดึงสถานะปัจจุบันจาก ticket table
-      const currentTicket = await this.ticketRepo.findOne({
-        where: { id: ticketId }
-      });
+      // ✅ ส่งคำขอซิงค์ผ่าน Kafka แทน direct update
+      const syncResult = await this.kafkaService.requestTicketStatusSync(ticketId, latestStatusId);
 
-      if (!currentTicket) {
-        return {
-          success: false,
-          message: 'Ticket not found',
-          old_status: 0,
-          new_status: 0
-        };
-      }
-
-      const oldStatus = currentTicket.status_id;
-
-      // อัปเดตสถานะใน ticket table ให้ตรงกับ history ล่าสุด
-      if (oldStatus !== latestStatusId) {
-        await this.ticketRepo.update(ticketId, {
-          status_id: latestStatusId,
-          update_date: new Date()
-        });
-
-        console.log(`✅ Synced ticket ${ticketId}: ${oldStatus} -> ${latestStatusId}`);
-
-        return {
-          success: true,
-          message: 'Status synced successfully',
-          old_status: oldStatus,
-          new_status: latestStatusId
-        };
-      } else {
-        return {
-          success: true,
-          message: 'Status already in sync',
-          old_status: oldStatus,
-          new_status: latestStatusId
-        };
-      }
+      return syncResult;
 
     } catch (error) {
-      console.error('Error syncing ticket status:', error);
+      this.logger.error('Error syncing ticket status:', error);
       throw error;
     }
   }
 
-  // Helper methods เหมือนเดิม...
+  // ✅ เพิ่ม method สำหรับดึงข้อมูล user ผ่าน Kafka
+  private async getUserInfo(userId: number): Promise<{ name: string; email: string }> {
+    try {
+      // ตรวจสอบ cache ก่อน
+      const cached = this.userCache.get(userId);
+      if (cached && (Date.now() - cached.cached_at.getTime()) < this.CACHE_TTL) {
+        return { name: cached.name, email: cached.email };
+      }
+
+      // ขอข้อมูล user ผ่าน Kafka
+      const userInfo = await this.kafkaService.requestUserInfo(userId);
+
+      if (userInfo) {
+        // บันทึก cache
+        this.userCache.set(userId, {
+          name: userInfo.name,
+          email: userInfo.email,
+          cached_at: new Date(),
+        });
+
+        return { name: userInfo.name, email: userInfo.email };
+      }
+
+      // Fallback ถ้าไม่มีข้อมูล
+      return { name: `User ${userId}`, email: '' };
+
+    } catch (error) {
+      this.logger.error(`Error getting user info for user ${userId}:`, error);
+      return { name: `User ${userId}`, email: '' };
+    }
+  }
+
+  // ✅ เพิ่ม method สำหรับล้าง cache
+  clearUserCache() {
+    this.userCache.clear();
+    this.logger.log('🧹 User cache cleared');
+  }
+
+  // ✅ เพิ่ม method สำหรับล้าง cache user เฉพาะ
+  clearUserFromCache(userId: number) {
+    this.userCache.delete(userId);
+    this.logger.log(`🧹 User ${userId} removed from cache`);
+  }
+
+  // Helper methods
   async getStatusName(statusId: number): Promise<string> {
     try {
-      // ✅ ดึงชื่อสถานะจาก database แทนการ hardcode
-      const result = await this.historyRepo
-        .createQueryBuilder('ts')
-        .select([
-          `COALESCE(tsl.name, ts.name, CONCAT('Status ', :statusId)) AS name`,
-        ])
-        .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = ts.id AND tsl.language_id = :lang', {
-          lang: 'th',
-        })
-        .where('ts.id = :statusId', { statusId })
-        .andWhere('ts.isenabled = true')
-        .limit(1)
-        .setParameters({ statusId }) // เพิ่มเติมเพื่อความชัดเจนใน CONCAT
-        .getRawOne();
+      const result = await this.dataSource.query(`
+        SELECT COALESCE(tsl.name, CONCAT('Status ', $1)) AS name
+        FROM ticket_status ts
+        LEFT JOIN ticket_status_language tsl ON tsl.status_id = ts.id AND tsl.language_id = 'th'
+        WHERE ts.id = $1 AND ts.isenabled = true
+        LIMIT 1
+      `, [statusId]);
 
       return result.length > 0 ? result[0].name : `Status ${statusId}`;
     } catch (error) {
-      console.error('Error getting status name:', error);
+      this.logger.error('Error getting status name:', error);
       return `Status ${statusId}`;
     }
   }
 
   async getUserName(userId: number): Promise<string> {
     try {
-      const result = await this.userRepo
-        .createQueryBuilder('u')
-        .select([
-          `CONCAT(u.firstname, ' ', u.lastname) AS name`,
-        ])
-        .where('u.id = :userId', { userId })
-        .limit(1)
-        .getRawOne();
-
-      return result.length > 0 ? result[0].name : `User ${userId}`;
+      const userInfo = await this.getUserInfo(userId);
+      return userInfo.name || `User ${userId}`;
     } catch (error) {
-      console.error('Error getting user name:', error);
+      this.logger.error('Error getting user name:', error);
       return `User ${userId}`;
     }
   }
@@ -322,6 +318,7 @@ export class TicketStatusHistoryService {
     }
   }
 
+  // Legacy methods (keep for compatibility)
   findAll() {
     return `This action returns all ticketStatusHistory`;
   }
@@ -330,7 +327,7 @@ export class TicketStatusHistoryService {
     return `This action returns a #${id} ticketStatusHistory`;
   }
 
-  update(id: number, updateTicketStatusHistoryDto: UpdateTicketStatusHistoryDto) {
+  update(id: number, updateTicketStatusHistoryDto: any) {
     return `This action updates a #${id} ticketStatusHistory`;
   }
 

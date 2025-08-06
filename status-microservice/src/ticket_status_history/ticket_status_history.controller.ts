@@ -1,81 +1,31 @@
-import { 
-  Controller, 
-  Get, 
-  Post, 
-  Body, 
-  Patch, 
-  Param, 
-  Delete, 
-  HttpCode,
-  HttpStatus,
-  ParseIntPipe,
-  Request,
-  NotFoundException,
-  BadRequestException,
-  UseGuards
- } from '@nestjs/common';
+import { Controller, Logger } from '@nestjs/common';
+import { MessagePattern, Payload } from '@nestjs/microservices';
 import { TicketStatusHistoryService } from './ticket_status_history.service';
-import { CreateTicketStatusHistoryDto } from './dto/create-ticket_status_history.dto';
-import { UpdateTicketStatusHistoryDto } from './dto/update-ticket_status_history.dto';
-import { JwtAuthGuard } from '../auth/jwt_auth.guard';
 
-@Controller('api')
+@Controller()
 export class TicketStatusHistoryController {
-  constructor(private readonly ticketStatusHistoryService: TicketStatusHistoryService) {}
+  private readonly logger = new Logger(TicketStatusHistoryController.name);
 
-  @Get('ticket/:ticketId/current-status')
-  @UseGuards(JwtAuthGuard)
-  async getCurrentStatus(
-    @Param('ticketId', ParseIntPipe) ticketId: number,
-    @Request() req: any
-  ) {
+  constructor(private readonly historyService: TicketStatusHistoryService) {}
+
+  // ✅ รับคำขอสร้าง history entry ใหม่
+  @MessagePattern('history.create')
+  async createHistory(@Payload() data: {
+    ticket_id: number;
+    status_id: number;
+    create_by: number;
+    comment?: string;
+  }) {
     try {
-      const currentStatus = await this.ticketStatusHistoryService.getCurrentTicketStatus(ticketId);
+      this.logger.log(`📥 Received history.create for ticket ${data.ticket_id}`);
       
-      if (!currentStatus) {
-        throw new NotFoundException(`Ticket ${ticketId} not found`);
-      }
-      
-      return {
-        success: true,
-        message: 'Current status retrieved',
-        data: currentStatus
-      };
-    } catch (error) {
-      console.error('💥 Error getting current status:', error);
-      return {
-        success: false,
-        message: 'Failed to get current status',
-        error: error.message
-      };
-    }
-  }
+      const history = await this.historyService.createHistory({
+        ticket_id: data.ticket_id,
+        status_id: data.status_id,
+        create_by: data.create_by,
+      });
 
-  // ✅ POST - บันทึก status change (แก้ไขแล้ว)
-  @Post('history/:ticketId')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.CREATED)
-  async createHistory(
-    @Param('ticketId', ParseIntPipe) ticketId: number,
-    @Body() createDto: { status_id: number }, // เปลี่ยนเป็น inline type ง่ายๆ
-    @Request() req: any
-  ) {
-    try {
-      console.log(`📝 Creating history for ticket ${ticketId}, status: ${createDto.status_id}`);
-
-      // ✅ สร้าง history data โดยไม่ส่ง create_date (ให้ database จัดการ)
-      const historyData = {
-        ticket_id: ticketId,
-        status_id: createDto.status_id,
-        create_by: req.user.id
-        // ไม่ส่ง create_date เพราะ @CreateDateColumn จะจัดการให้
-      };
-
-      // ✅ บันทึก history
-      const history = await this.ticketStatusHistoryService.createHistory(historyData);
-
-      // ✅ ดึงข้อมูล status name สำหรับ response
-      const statusName = await this.ticketStatusHistoryService.getStatusName(createDto.status_id);
+      const statusName = await this.historyService.getStatusName(data.status_id);
 
       return {
         success: true,
@@ -87,62 +37,95 @@ export class TicketStatusHistoryController {
           status_name: statusName,
           create_by: history.create_by,
           create_date: history.create_date,
-          created_by_user: req.user.username || req.user.email
         }
       };
     } catch (error) {
-      console.error('💥 Error creating history:', error);
-      throw error;
+      this.logger.error('💥 Error creating history:', error);
+      return {
+        success: false,
+        message: 'Failed to create history',
+        error: error.message
+      };
     }
   }
 
-  // ✅ POST - บันทึก status change พร้อมชื่อ status (แก้ไขแล้ว)
-  @Post('history/status-change/:ticketId')
-  @HttpCode(HttpStatus.CREATED)
-  async logStatusChange(
-    @Param('ticketId', ParseIntPipe) ticketId: number,
-    @Body() body: { 
-      status_id: number;
-      status_name?: string; // optional สำหรับ validation
-    },
-    @Request() req: any
-  ) {
+  // ✅ รับคำขอดึง current status ของ ticket
+  @MessagePattern('history.current_status.get')
+  async getCurrentStatus(@Payload() data: { ticket_id: number }) {
     try {
-      console.log(`📊 Logging status change for ticket ${ticketId} to status ${body.status_id}`);
-
-      // ✅ Validate status exists ถ้าส่ง status_name มา
-      if (body.status_name) {
-        const isValidStatus = await this.ticketStatusHistoryService.validateStatus(body.status_id, body.status_name);
-        if (!isValidStatus) {
-          throw new BadRequestException(`Invalid status: ${body.status_name} (ID: ${body.status_id})`);
-        }
+      this.logger.log(`📥 Received history.current_status.get for ticket ${data.ticket_id}`);
+      
+      const currentStatus = await this.historyService.getCurrentTicketStatus(data.ticket_id);
+      
+      if (!currentStatus) {
+        return {
+          success: false,
+          message: `Ticket ${data.ticket_id} not found`,
+          data: null
+        };
       }
-
-      // ✅ สร้าง history โดยไม่ส่ง create_date
-      const historyData = {
-        ticket_id: ticketId,
-        status_id: body.status_id,
-        create_by: req.user.id
-      };
-
-      const history = await this.ticketStatusHistoryService.createHistory(historyData);
-      const statusName = await this.ticketStatusHistoryService.getStatusName(body.status_id);
-
+      
       return {
         success: true,
-        message: 'Status change logged successfully',
+        message: 'Current status retrieved',
+        data: currentStatus
+      };
+    } catch (error) {
+      this.logger.error('💥 Error getting current status:', error);
+      return {
+        success: false,
+        message: 'Failed to get current status',
+        error: error.message
+      };
+    }
+  }
+
+  // ✅ รับคำขอ debug status change
+  @MessagePattern('history.debug_status')
+  async debugStatusChange(@Payload() data: { ticket_id: number }) {
+    try {
+      this.logger.log(`📥 Received history.debug_status for ticket ${data.ticket_id}`);
+      
+      const debugInfo = await this.historyService.debugStatusChange(data.ticket_id);
+      
+      return {
+        success: true,
+        message: 'Debug info retrieved',
+        data: debugInfo
+      };
+    } catch (error) {
+      this.logger.error('💥 Error getting debug info:', error);
+      return {
+        success: false,
+        message: 'Failed to get debug info',
+        error: error.message
+      };
+    }
+  }
+
+  // ✅ รับคำขอซิงค์ status
+  @MessagePattern('history.sync_status')
+  async syncStatus(@Payload() data: { ticket_id: number }) {
+    try {
+      this.logger.log(`📥 Received history.sync_status for ticket ${data.ticket_id}`);
+      
+      const syncResult = await this.historyService.syncTicketStatus(data.ticket_id);
+      
+      return {
+        success: syncResult.success,
+        message: syncResult.message,
         data: {
-          id: history.id,
-          ticket_id: ticketId,
-          status_id: body.status_id,
-          status_name: statusName,
-          create_date: history.create_date,
-          changed_by: req.user.username || req.user.email
+          old_status: syncResult.old_status,
+          new_status: syncResult.new_status
         }
       };
     } catch (error) {
-      console.error('💥 Error logging status change:', error);
-      throw error;
+      this.logger.error('💥 Error syncing status:', error);
+      return {
+        success: false,
+        message: 'Failed to sync status',
+        error: error.message
+      };
     }
   }
 }
