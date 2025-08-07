@@ -3,7 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { CustomerService } from './customer.service';
 import { CustomerController } from './customer.controller';
 import { Customer } from './entities/customer.entity';
-import { KafkaModule } from '../../../libs/common/src/kafka/kafka.module';
+import { KafkaModule } from '../libs/common/kafka/kafka.module';
 
 @Module({
   imports: [

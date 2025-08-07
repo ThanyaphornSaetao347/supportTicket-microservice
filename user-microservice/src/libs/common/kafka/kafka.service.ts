@@ -6,7 +6,7 @@ export class KafkaService {
   private readonly logger = new Logger(KafkaService.name);
 
   constructor(
-    @Inject('KAFKA_CLIENT') private readonly client: ClientKafka,
+    @Inject('USER_SERVICE') private readonly client: ClientKafka,
   ) {}
 
   async onModuleInit() {
@@ -37,5 +37,9 @@ export class KafkaService {
 
   async emitUserStatusChanged(data: any) {
     return this.client.emit('user.status.changed', data);
+  }
+
+  async sendMessage(topic: string, payload: any) {
+    return this.client.send(topic, payload).toPromise();
   }
 }

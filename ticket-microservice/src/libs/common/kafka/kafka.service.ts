@@ -19,13 +19,19 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
-    await this.client.connect();
-    this.logger.log('🎫 Ticket Service Kafka client connected');
-
-    // ✅ Subscribe topics ของ categories
-    this.categoriesClient.subscribeToResponseOf('categories.find.all');
-    this.categoriesClient.subscribeToResponseOf('category.find.by.id');
-    await this.categoriesClient.connect();
+  // Connect all clients
+    await Promise.all([
+      this.client.connect(),
+      this.notiClient.connect(),
+      this.statusClient.connect(),
+      this.projectClient.connect(),
+      this.userClient.connect(),
+      this.satisfactionClient.connect(),
+      this.customerClient.connect(),
+      this.categoriesClient.connect(),
+    ]);
+    
+    this.logger.log('🎫 All Ticket Service Kafka clients connected');
   }
 
   async onModuleDestroy() {

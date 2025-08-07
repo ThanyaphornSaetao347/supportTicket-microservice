@@ -1,3 +1,4 @@
+// เพิ่ม missing imports และ services
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { HttpModule } from '@nestjs/axios';
@@ -7,6 +8,7 @@ import { UserService } from './user/user.service';
 import { AuthModule } from './auth/auth.module';
 import { KafkaModule } from './kafka/kafka.module';
 
+// เพิ่ม missing services
 @Module({
   imports: [
     ConfigModule.forRoot({ 
