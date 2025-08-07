@@ -1,11 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, FindManyOptions } from 'typeorm';
+import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 import { Ticket } from './entities/ticket.entity';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 import { TicketAttachment } from '../ticket_attachment/entities/ticket_attachment.entity';
-import { TicketCategory } from '../ticket_categories/entities/ticket_category.entity';
 import { AttachmentService } from '../ticket_attachment/ticket_attachment.service';
 import { TicketAssigned } from '../ticket_assigned/entities/ticket_assigned.entity';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
@@ -18,13 +17,32 @@ export class TicketService {
     @InjectRepository(TicketAttachment)
     private readonly attachmentRepo: Repository<TicketAttachment>,
     private readonly attachmentService: AttachmentService,
-    @InjectRepository(TicketCategory)
-    private readonly categoryRepo: Repository<TicketCategory>,
     @InjectRepository(TicketAssigned)
     private readonly assignRepo: Repository<TicketAssigned>,
     private readonly dataSource: DataSource,
     private readonly kafkaService: KafkaService,
   ) {}
+
+  async getTicketsByUser(userId: number, filters?: { statusId?: number; startDate?: string; endDate?: string }) {
+    let query: SelectQueryBuilder<Ticket> = this.ticketRepo.createQueryBuilder('ticket')
+      .where('ticket.create_by = :userId', { userId })
+      .andWhere('ticket.isenabled = true');
+
+    if (filters) {
+      if (filters.statusId) {
+        query = query.andWhere('ticket.status_id = :statusId', { statusId: filters.statusId });
+      }
+      if (filters.startDate && filters.endDate) {
+        query = query.andWhere('ticket.create_date BETWEEN :startDate AND :endDate', {
+          startDate: filters.startDate,
+          endDate: filters.endDate,
+        });
+      }
+    }
+
+    const tickets = await query.orderBy('ticket.create_date', 'DESC').getMany();
+    return tickets;
+  }
 
   // ✅ Update ticket status using Kafka communication
   async updateTicketStatus(ticketId: number, statusId: number, userId: number, comment?: string) {
@@ -39,7 +57,7 @@ export class TicketService {
       const oldStatusId = ticket.status_id;
 
       // 1. Get status information via Kafka
-      const statusResult = await this.kafkaService.getStatusById(statusId);
+      const statusResult = await this.kafkaService.getTicketStatusById(statusId);
       if (!statusResult.success) {
         throw new BadRequestException('Invalid status ID');
       }
@@ -120,7 +138,11 @@ export class TicketService {
       await this.assignRepo.save(assignment);
 
       // Send assignment notification via Kafka
-      await this.kafkaService.sendAssignmentNotification(ticketId, assignedUserId, assignedBy);
+      await this.kafkaService.sendTicketAssignedNotification({
+        ticketId, 
+        assignedUserId, 
+        assignedBy
+      });
 
       // Emit assignment event
       await this.kafkaService.emitTicketAssigned({
@@ -224,12 +246,9 @@ export class TicketService {
   // ✅ Notify supporters using Kafka
   private async notifySupporters(ticket: Ticket) {
     try {
-      // In a microservice architecture, we might get supporter IDs from user-microservice
-      // For now, we'll use hardcoded role IDs as before
       const supporterRoleIds = [5, 6, 7, 8, 9, 10, 13];
 
-      // This would ideally call user-microservice to get supporters
-      // For now, keeping the direct query but noting it should be moved
+      // TODO: เปลี่ยนเป็นใช้ user-microservice
       const supporterUserIds = await this.dataSource
         .createQueryBuilder()
         .select('DISTINCT u.id')
@@ -248,7 +267,10 @@ export class TicketService {
       console.log(`Found ${userIds.length} supporters:`, userIds);
 
       // Send notification via Kafka
-      await this.kafkaService.sendNewTicketNotification(ticket.ticket_no, userIds);
+      await this.kafkaService.sendTicketCreatedNotification({
+        ticketNo: ticket.ticket_no, 
+        userIds
+      });
       
     } catch (error) {
       console.error('Error notifying supporters:', error);
@@ -296,11 +318,11 @@ export class TicketService {
 
       // Get project info via Kafka
       const projectResult = await this.kafkaService.getProjectById(ticket.project_id);
-      const projectName = projectResult.success ? projectResult.data.name : 'Unknown Project';
+      const projectName = projectResult.success ? projectResult.data?.name : 'Unknown Project';
 
       // Get status info via Kafka  
-      const statusResult = await this.kafkaService.getStatusById(ticket.status_id);
-      const statusName = statusResult.success ? statusResult.data.name : 'Unknown Status';
+      const statusResult = await this.kafkaService.getTicketStatusById(ticket.status_id);
+      const statusName = statusResult.success ? statusResult.data?.name : 'Unknown Status';
 
       // Get status history via Kafka
       const statusHistoryResult = await this.kafkaService.getStatusHistoryByTicket(ticket.id);
@@ -347,20 +369,16 @@ export class TicketService {
   // ✅ Get all master filters using Kafka
   async getAllMasterFilter(userId: number): Promise<any> {
     try {
-      // Get categories (still local for now, but could be moved to category-microservice)
-      const categories = await this.categoryRepo
-        .createQueryBuilder('tc')
-        .innerJoin('ticket_categories_language', 'tcl', 'tcl.category_id = tc.id AND tcl.language_id = :lang', { lang: 'th' })
-        .where('tc.isenabled = true')
-        .select(['tc.id AS id', 'tcl.name AS name'])
-        .getRawMany();
+      // ✅ Get categories from categories-microservice via Kafka
+      const categoriesResult = await this.kafkaService.getAllCategories('th');
+      const categories = categoriesResult.success ? categoriesResult.data : [];
 
-      // Get projects via Kafka
-      const projectsResult = await this.kafkaService.getProjectsByUser(userId);
+      // ✅ Get projects via Kafka
+      const projectsResult = await this.kafkaService.getProjectsByUserId(userId);
       const projects = projectsResult.success ? projectsResult.data : [];
 
-      // Get statuses via Kafka
-      const statusResult = await this.kafkaService.getAllStatuses('th');
+      // ✅ Get statuses via Kafka
+      const statusResult = await this.kafkaService.getAllTicketStatuses('th');
       const status = statusResult.success ? statusResult.data : [];
 
       return {
@@ -373,7 +391,7 @@ export class TicketService {
         },
       };
     } catch (error) {
-      console.error('Error:', error.message);
+      console.error('Error in getAllMasterFilter:', error.message);
       return {
         code: 2,
         message: 'เกิดข้อผิดพลาด',
@@ -405,7 +423,7 @@ export class TicketService {
       }
 
       // Create satisfaction via Kafka
-      const satisfactionResult = await this.kafkaService.createSatisfaction({
+      const satisfactionResult = await this.kafkaService.createSatisfactionSurvey({
         ticket_id: ticket.id,
         rating,
         comment,
@@ -435,7 +453,6 @@ export class TicketService {
       const queryBuilder = this.ticketRepo.createQueryBuilder('t')
         .where('t.isenabled = true');
 
-      // Add search term
       if (searchTerm) {
         queryBuilder.andWhere(
           '(t.ticket_no ILIKE :searchTerm OR t.issue_description ILIKE :searchTerm)',
@@ -443,53 +460,12 @@ export class TicketService {
         );
       }
 
-      // Add filters
       if (filters?.status_id) {
         queryBuilder.andWhere('t.status_id = :statusId', { statusId: filters.status_id });
       }
 
       if (filters?.category_id) {
         queryBuilder.andWhere('t.categories_id = :categoryId', { categoryId: filters.category_id });
-      }
-
-      if (filters?.project_id) {
-        queryBuilder.andWhere('t.project_id = :projectId', { projectId: filters.project_id });
-      }
-
-      // User-specific filters
-      if (userId) {
-        queryBuilder.andWhere(
-          '(t.create_by = :userId OR EXISTS (SELECT 1 FROM ticket_assigned ta WHERE ta.ticket_id = t.id AND ta.user_id = :userId))',
-          { userId }
-        );
-      }
-
-      const tickets = await queryBuilder
-        .orderBy('t.create_date', 'DESC')
-        .limit(50)
-        .getMany();
-
-      return tickets;
-    } catch (error) {
-      console.error('Error searching tickets:', error);
-      throw error;
-    }
-  }
-
-  async getTicketsByUser(userId: number, filters?: any) {
-    try {
-      console.log('👤 Getting tickets by user:', userId, filters);
-
-      const queryBuilder = this.ticketRepo.createQueryBuilder('t')
-        .where('t.isenabled = true')
-        .andWhere(
-          '(t.create_by = :userId OR EXISTS (SELECT 1 FROM ticket_assigned ta WHERE ta.ticket_id = t.id AND ta.user_id = :userId))',
-          { userId }
-        );
-
-      // Apply filters
-      if (filters?.status_id) {
-        queryBuilder.andWhere('t.status_id = :statusId', { statusId: filters.status_id });
       }
 
       if (filters?.project_id) {
@@ -527,14 +503,12 @@ export class TicketService {
 
       const totalTickets = await queryBuilder.getCount();
 
-      // Get status distribution
       const statusDistribution = await queryBuilder
         .select('t.status_id', 'status_id')
         .addSelect('COUNT(*)', 'count')
         .groupBy('t.status_id')
         .getRawMany();
 
-      // Get category distribution
       const categoryDistribution = await queryBuilder
         .select('t.categories_id', 'category_id')
         .addSelect('COUNT(*)', 'count')
@@ -552,30 +526,25 @@ export class TicketService {
     }
   }
 
-  // ✅ Get categories DDL via Kafka (if moved to separate service)
   async getCategoriesDDL(languageId?: string) {
     try {
-      // For now, still local - but this could be moved to category-microservice
-      const categories = await this.categoryRepo
-        .createQueryBuilder('tc')
-        .innerJoin('ticket_categories_language', 'tcl', 'tcl.category_id = tc.id')
-        .where('tc.isenabled = true')
-        .andWhere(languageId ? 'tcl.language_id = :languageId' : '1=1', 
-          languageId ? { languageId } : {})
-        .select(['tc.id as id', 'tcl.name as name', 'tcl.language_id as language_id'])
-        .getRawMany();
+      const categoriesResult = await this.kafkaService.getAllCategories(languageId || 'th');
 
-      return categories;
+      if (!categoriesResult?.success) {
+        console.error('Error from categories-microservice:', categoriesResult?.message);
+        return [];
+      }
+
+      return categoriesResult.data;
     } catch (error) {
-      console.error('Error getting categories DDL:', error);
+      console.error('Error getting categories DDL via Kafka:', error);
       return [];
     }
   }
 
-  // ✅ Get status DDL via Kafka
   async getStatusDDL(languageId?: string) {
     try {
-      const statusResult = await this.kafkaService.getAllStatuses(languageId || 'th');
+      const statusResult = await this.kafkaService.getAllTicketStatuses(languageId || 'th');
       return statusResult.success ? statusResult.data : [];
     } catch (error) {
       console.error('Error getting status DDL:', error);
@@ -583,7 +552,7 @@ export class TicketService {
     }
   }
 
-  // ===== CRUD OPERATIONS WITH KAFKA INTEGRATION =====
+  // ===== CRUD OPERATIONS =====
   async findAllTickets(userId?: number, filters?: any) {
     try {
       const queryBuilder = this.ticketRepo.createQueryBuilder('t')
@@ -627,14 +596,12 @@ export class TicketService {
       
       const oldStatusId = ticket.status_id;
       
-      // Update ticket
       Object.assign(ticket, updateData);
       ticket.update_by = userId || ticket.update_by;
       ticket.update_date = new Date();
       
       const updatedTicket = await this.ticketRepo.save(ticket);
 
-      // If status changed, handle via Kafka
       if (updateData.status_id && updateData.status_id !== oldStatusId) {
         await this.kafkaService.createStatusHistory({
           ticket_id: id,
@@ -650,7 +617,6 @@ export class TicketService {
         });
       }
 
-      // Emit update event
       await this.kafkaService.emitTicketUpdated({
         ticketId: id,
         updatedBy: userId,
@@ -669,14 +635,11 @@ export class TicketService {
     try {
       const ticket = await this.findOneTicket(id);
       
-      // Soft delete
       ticket.isenabled = false;
       ticket.update_by = userId || ticket.update_by;
       ticket.update_date = new Date();
       
       await this.ticketRepo.save(ticket);
-
-      // Soft delete attachments
       await this.attachmentService.softDeleteAllByTicketId(id);
 
       console.log(`✅ Ticket ${id} soft deleted successfully`);
@@ -748,7 +711,7 @@ export class TicketService {
     return fallbackTicketNo;
   }
 
-  // ===== LEGACY METHODS (for backward compatibility) =====
+  // ===== LEGACY METHODS =====
   async checkTicketOwnership(userId: number, ticketId: number): Promise<any[]> {
     try {
       console.log(`🔍 Checking ownership: ticket ${ticketId}, user ${userId}`);

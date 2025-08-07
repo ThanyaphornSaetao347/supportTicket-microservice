@@ -15,11 +15,17 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
     @Inject('SATISFACTION_SERVICE') private readonly satisfactionClient: ClientKafka,
     @Inject('CUSTOMER_SERVICE') private readonly customerClient: ClientKafka,
+    @Inject('CATEGORIES_SERVICE') private readonly categoriesClient: ClientKafka,
   ) {}
 
   async onModuleInit() {
     await this.client.connect();
     this.logger.log('🎫 Ticket Service Kafka client connected');
+
+    // ✅ Subscribe topics ของ categories
+    this.categoriesClient.subscribeToResponseOf('categories.find.all');
+    this.categoriesClient.subscribeToResponseOf('category.find.by.id');
+    await this.categoriesClient.connect();
   }
 
   async onModuleDestroy() {
@@ -130,6 +136,18 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // categories microservice
+  async getAllCategories(languageId: string): Promise<any> {
+    try {
+      return await firstValueFrom(
+        this.categoriesClient.send('categories.find.all', { language_id: languageId }).pipe(timeout(5000))
+      );
+    } catch (error) {
+      this.logger.error('Failed to get all categories from categories-microservice', error);
+      throw error;
+    }
+  }
+
   // Status Microservice
   async getTicketStatusById(statusId: number, languageId: string = 'th'): Promise<any> {
     try {
@@ -161,7 +179,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async getStatusHistory(ticketId: number): Promise<any> {
+  async getStatusHistoryByTicket(ticketId: number): Promise<any> {
     try {
       return await this.statusClient.send('status.history.find.by.ticket', { ticketId }).toPromise();
     } catch (error) {
@@ -213,6 +231,15 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       return await this.notiClient.send('notification.ticket.assigned', assignmentData).toPromise();
     } catch (error) {
       this.logger.error('Failed to send ticket assigned notification', error);
+      throw error;
+    }
+  }
+
+  async sendStatusChangeNotification(status_id: any): Promise<any> {
+    try {
+      return await this.notiClient.send('notification.ticket.status', status_id).toPromise();
+    } catch (error) {
+      this.logger.error('Failed to send ticket status notification', error);
       throw error;
     }
   }

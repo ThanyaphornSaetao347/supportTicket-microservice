@@ -407,4 +407,86 @@ export class AttachmentService {
       data: { id },
     };
   }
+
+  async getAttachmentStatistics(ticketId?: number, userId?: number, dateRange?: any): Promise<{
+    totalAttachments: number;
+    totalSize: number;
+    typeDistribution: any[];
+    recentUploads: any[];
+  }> {
+    try {
+      const queryBuilder = this.attachmentRepo.createQueryBuilder('a')
+        .where('a.isenabled = true');
+
+      if (ticketId) {
+        queryBuilder.andWhere('a.ticket_id = :ticketId', { ticketId });
+      }
+
+      if (userId) {
+        queryBuilder.andWhere('a.create_by = :userId', { userId });
+      }
+
+      if (dateRange?.startDate && dateRange?.endDate) {
+        queryBuilder.andWhere(
+          'a.create_date BETWEEN :startDate AND :endDate',
+          { startDate: dateRange.startDate, endDate: dateRange.endDate }
+        );
+      }
+
+      const attachments = await queryBuilder.getMany();
+      
+      const totalAttachments = attachments.length;
+      const totalSize = attachments.reduce((sum, a) => sum + (a.ticket_id || 0), 0); // placeholder for size
+      
+      // Type distribution
+      const typeCount = {};
+      attachments.forEach(a => {
+        const ext = a.extension || 'unknown';
+        typeCount[ext] = (typeCount[ext] || 0) + 1;
+      });
+      
+      const typeDistribution = Object.entries(typeCount).map(([type, count]) => ({
+        type,
+        count
+      }));
+      
+      // Recent uploads (last 10)
+      const recentUploads = attachments
+        .sort((a, b) => new Date(b.create_date).getTime() - new Date(a.create_date).getTime())
+        .slice(0, 10)
+        .map(a => ({
+          id: a.id,
+          filename: a.filename,
+          extension: a.extension,
+          ticket_id: a.ticket_id,
+          create_date: a.create_date,
+          create_by: a.create_by
+        }));
+
+      return {
+        totalAttachments,
+        totalSize,
+        typeDistribution,
+        recentUploads
+      };
+    } catch (error) {
+      console.error('Error getting attachment statistics:', error);
+      throw error;
+    }
+  }
+
+  validateFileTypeArray(files: Express.Multer.File[], userId?: number): boolean {
+    const allowedMimeTypes = [
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'image/bmp',
+      'image/tiff',
+      'application/pdf'
+    ];
+
+    return files.every(file => allowedMimeTypes.includes(file.mimetype));
+  }
+
 }

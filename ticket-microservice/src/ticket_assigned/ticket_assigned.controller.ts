@@ -8,7 +8,7 @@ import { TicketAssigned } from './entities/ticket_assigned.entity';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
 
 @Injectable()
-export class TicketAssignedService {
+export class TicketAssignedController {
   constructor(
     @InjectRepository(Ticket)
     private readonly ticketRepo: Repository<Ticket>,
@@ -39,7 +39,11 @@ export class TicketAssignedService {
 
     try {
       console.log(`📧 Sending assignment notification for ticket ${ticket.id} to user ${assignedTo}`);
-      await this.kafkaService.sendAssignmentNotification(ticket.id, assignedTo, assignedBy);
+      await this.kafkaService.sendTicketAssignedNotification({
+        ticketId: ticket.id, 
+        assignedTo, 
+        assignedBy
+      });
       console.log(`✅ Assignment notification sent successfully`);
     } catch (notificationError) {
       console.error('❌ Failed to send assignment notification:', notificationError);
