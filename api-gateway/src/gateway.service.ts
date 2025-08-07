@@ -8,6 +8,12 @@ export class GatewayService implements OnModuleInit {
     @Inject('AUTH_SERVICE') private readonly authClient: ClientKafka,
     @Inject('TICKET_SERVICE') private readonly ticketClient: ClientKafka,
     @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
+    @Inject('PROJECT_SERVICE') private readonly projectClient: ClientKafka,
+    @Inject('CUSTOMER_SERVICE') private readonly customerClient: ClientKafka,
+    @Inject('NOTIFICATION_SERVICE') private readonly notiClient: ClientKafka,
+    @Inject('SATISFACTION_SERVICE') private readonly satisfactionClient: ClientKafka,
+    @Inject('CATEGORIES_SERVICE') private readonly categoriseClient: ClientKafka,
+    @Inject('STATUS_SERVICE') private readonly statusClient: ClientKafka,
   ) {}
 
   async onModuleInit() {
