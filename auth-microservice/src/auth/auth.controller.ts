@@ -19,7 +19,7 @@ interface LoginResponse {
   permission?: number[];
 }
 
-@Controller()
+@Controller('api/auth')
 export class AuthController {
   constructor(
     private authService: AuthService,
@@ -119,7 +119,7 @@ export class AuthController {
     };
   }
 
-  @MessagePattern('validate_token')
+  @MessagePattern('validate')
   async validateToken(@Payload() message: any) {
     try {
       const token: string = message.value.token;

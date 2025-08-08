@@ -2,32 +2,33 @@ import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/commo
 import { TicketCategoriesLanguageService } from './ticket_categories_language.service';
 import { CreateTicketCategoriesLanguageDto } from './dto/create-ticket_categories_language.dto';
 import { UpdateTicketCategoriesLanguageDto } from './dto/update-ticket_categories_language.dto';
+import { MessagePattern } from '@nestjs/microservices';
 
 @Controller('ticket-categories-language')
 export class TicketCategoriesLanguageController {
   constructor(private readonly ticketCategoriesLanguageService: TicketCategoriesLanguageService) {}
 
-  @Post()
+  @MessagePattern()
   create(@Body() createTicketCategoriesLanguageDto: CreateTicketCategoriesLanguageDto) {
     return this.ticketCategoriesLanguageService.create(createTicketCategoriesLanguageDto);
   }
 
-  @Get()
+  @MessagePattern()
   findAll() {
     return this.ticketCategoriesLanguageService.findAll();
   }
 
-  @Get(':id')
+  @MessagePattern(':id')
   findOne(@Param('id') id: string) {
     return this.ticketCategoriesLanguageService.findOne(+id);
   }
 
-  @Patch(':id')
+  @MessagePattern(':id')
   update(@Param('id') id: string, @Body() updateTicketCategoriesLanguageDto: UpdateTicketCategoriesLanguageDto) {
     return this.ticketCategoriesLanguageService.update(+id, updateTicketCategoriesLanguageDto);
   }
 
-  @Delete(':id')
+  @MessagePattern(':id')
   remove(@Param('id') id: string) {
     return this.ticketCategoriesLanguageService.remove(+id);
   }

@@ -4,11 +4,11 @@ import { CustomerService } from './customer.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 
-@Controller()
+@Controller('api')
 export class CustomerController {
   constructor(private readonly customerService: CustomerService) {}
 
-  @MessagePattern('customer_create')
+  @MessagePattern('customer')
   async create(@Payload() message: any) {
     const { createCustomerDto, userId } = message.value;
     return this.customerService.create(createCustomerDto, userId);

@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TicketCategory } from './entities/ticket_category.entity';
 import { TicketCategoryLanguage } from '../ticket_categories_language/entities/ticket_categories_language.entity';
-import { CreateCategoryDto } from './dto/create-ticket_category.dto';
+import { CreateTicketCategoryDto } from './dto/create-ticket_category.dto';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
 
 @Injectable()
@@ -71,7 +71,7 @@ export class TicketCategoryService {
     }
   }
 
-  async createCategory(createCategoryDto: CreateCategoryDto) {
+  async createCategory(createCategoryDto: CreateTicketCategoryDto) {
     try {
       this.logger.log('Creating new category');
 

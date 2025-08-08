@@ -6,6 +6,7 @@ import { Ticket } from './entities/ticket.entity';
 import { TicketAttachment } from '../ticket_attachment/entities/ticket_attachment.entity';
 import { AttachmentService } from '../ticket_attachment/ticket_attachment.service';
 import { TicketAttachmentController } from '../ticket_attachment/ticket_attachment.controller';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
 
 @Module({
   imports: [
@@ -16,10 +17,12 @@ import { TicketAttachmentController } from '../ticket_attachment/ticket_attachme
   ],
   controllers: [TicketController, TicketAttachmentController],
   providers: [
+    KafkaService,
     TicketService,
     AttachmentService,
   ],
   exports: [
+    KafkaService,
     TicketService,
   ]
 })

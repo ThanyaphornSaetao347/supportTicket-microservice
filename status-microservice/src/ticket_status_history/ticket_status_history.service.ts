@@ -20,6 +20,24 @@ export class TicketStatusHistoryService {
     private readonly kafkaService: KafkaService,
   ) {}
 
+  async isDuplicate(ticket_id: number, status_id: number): Promise<boolean> {
+    const history = await this.historyRepo.findOne({
+      where: { ticket_id, status_id },
+      order: { create_date: 'DESC' },
+    });
+    return !!history;
+  }
+
+  async saveHistory(ticket_id: number, status_id: number, user_id: number, create_date: Date) {
+    const history = this.historyRepo.create({
+      ticket_id,
+      status_id,
+      create_by: user_id,
+      create_date,
+    });
+    await this.historyRepo.save(history);
+  }
+
   // ✅ บันทึก history entry ใหม่
   async createHistory(createData: {
     ticket_id: number;

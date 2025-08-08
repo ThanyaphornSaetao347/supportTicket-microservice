@@ -4,32 +4,32 @@ import { ProjectService } from './project.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 
-@Controller()
+@Controller('api')
 export class ProjectController {
   private readonly logger = new Logger(ProjectController.name);
 
   constructor(private readonly projectService: ProjectService) {}
 
   // Kafka Message Patterns - สำหรับ RPC calls
-  @MessagePattern('project.create')
+  @MessagePattern('projects')
   async handleCreateProject(@Payload() data: { createProjectDto: CreateProjectDto; userId: number }) {
     this.logger.log(`Received project create request for user: ${data.userId}`);
     return this.projectService.createProject(data.createProjectDto, data.userId);
   }
 
-  @MessagePattern('project.find_all')
+  @MessagePattern('project/all')
   async handleFindAll(@Payload() data: any) {
     this.logger.log('Received find all projects request');
     return this.projectService.getAllProjects();
   }
 
-  @MessagePattern('project.find_one')
+  @MessagePattern('project/:id')
   async handleFindOne(@Payload() data: { id: number }) {
     this.logger.log(`Received find project request for ID: ${data.id}`);
     return this.projectService.getProjectById(data.id);
   }
 
-  @MessagePattern('project.find_by_user')
+  @MessagePattern('getProjectDDL')
   async handleFindByUser(@Payload() data: { userId: number }) {
     this.logger.log(`Received find projects by user request for user: ${data.userId}`);
     return this.projectService.getProjectsForUser(data.userId);

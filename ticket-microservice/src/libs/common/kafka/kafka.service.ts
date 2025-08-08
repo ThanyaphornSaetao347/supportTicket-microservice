@@ -2,10 +2,15 @@
 import { Injectable, Inject, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { timeout, firstValueFrom } from 'rxjs';
+import { Kafka, Producer } from 'kafkajs';
 
 @Injectable()
 export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaService.name);
+  private kafka = new Kafka({
+    brokers: ['localhost:9092']
+  })
+  private producer: Producer = this.kafka.producer();
 
   constructor(
     @Inject('TICKET_SERVICE') private readonly client: ClientKafka,
@@ -277,13 +282,15 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       throw error;
     }
   }
-
-  // ส่งแบบ request-response (ถ้าต้องการ)
+  
   async sendMessage(topic: string, message: any) {
     try {
-      return await this.client.send(topic, message).toPromise();
+      await this.producer.send({
+        topic,
+        messages: [{ value: JSON.stringify(message) }],
+      });
     } catch (error) {
-      this.logger.error(`Failed to send message to topic ${topic}`, error);
+      console.error('Kafka sendMessage error:', error);
       throw error;
     }
   }

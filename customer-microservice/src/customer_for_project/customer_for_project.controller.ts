@@ -4,7 +4,7 @@ import { CustomerForProjectService } from './customer_for_project.service';
 import { CreateCustomerForProjectDto } from './dto/create-customer_for_project.dto';
 import { UpdateCustomerForProjectDto } from './dto/update-customer_for_project.dto';
 
-@Controller()
+@Controller('api')
 export class CustomerForProjectController {
   constructor(private readonly customerForProjectService: CustomerForProjectService) {}
 

@@ -4,8 +4,6 @@ import { TicketModule } from './ticket/ticket.module';
 import { KafkaModule } from './libs/common/kafka/kafka.module';
 import { TicketAssignedModule } from './ticket_assigned/ticket_assigned.module';
 import { TicketAttachmentModule } from './ticket_attachment/ticket_attachment.module';
-import { TicketCategoriesModule } from './ticket_categories/ticket_categories.module';
-import { TicketCategoriesLanguageModule } from './ticket_categories_language/ticket_categories_language.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 @Module({
@@ -35,8 +33,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
     TicketModule,
     TicketAssignedModule,
     TicketAttachmentModule,
-    TicketCategoriesModule,
-    TicketCategoriesLanguageModule
   ],
 })
 export class AppModule {}

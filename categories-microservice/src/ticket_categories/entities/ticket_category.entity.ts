@@ -1,4 +1,3 @@
-import { Ticket } from '../../ticket/entities/ticket.entity';
 import { TicketCategoryLanguage } from '../../ticket_categories_language/entities/ticket_categories_language.entity';
 import {
   Entity,
@@ -24,7 +23,4 @@ export class TicketCategory {
 
   @OneToMany(() => TicketCategoryLanguage, lang => lang.category)
   languages: TicketCategoryLanguage[];
-
-  @OneToMany(() => Ticket, ticket => ticket.categories)
-  ticket: Ticket;
 }

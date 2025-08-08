@@ -1,6 +1,6 @@
 import { IsOptional, IsArray, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
-import { CreateTicketStatusLanguageDto } from "src/ticket_status_language/dto/create-ticket_status_language.dto";
+import { CreateTicketStatusLanguageDto } from "../../ticket_status_language/dto/create-ticket_status_language.dto";
 
 export class CreateTicketStatusDto {
     @IsOptional()

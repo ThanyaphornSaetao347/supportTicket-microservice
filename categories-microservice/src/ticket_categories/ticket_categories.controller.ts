@@ -1,16 +1,16 @@
 import { Controller, Logger } from '@nestjs/common';
 import { MessagePattern, EventPattern, Payload } from '@nestjs/microservices';
 import { TicketCategoryService } from './ticket_categories.service';
-import { CreateCategoryDto } from './dto/create-ticket_category.dto';
+import { CreateTicketCategoryDto } from './dto/create-ticket_category.dto';
 
-@Controller()
+@Controller('api')
 export class TicketCategoryController {
   private readonly logger = new Logger(TicketCategoryController.name);
 
   constructor(private readonly categoryService: TicketCategoryService) {}
 
   // ✅ Kafka Message Patterns - สำหรับ RPC calls
-  @MessagePattern('categories_get_ddl')
+  @MessagePattern('getCategoriesDDL')
   async getCategoriesDDL(@Payload() data: { language_id?: string }) {
     try {
       this.logger.log(`📥 Received categories_get_ddl request for language: ${data.language_id}`);
@@ -33,7 +33,7 @@ export class TicketCategoryController {
     }
   }
 
-  @MessagePattern('categories_find_all')
+  @MessagePattern('categories')
   async findAllCategories(@Payload() data?: { language_id?: string }) {
     try {
       this.logger.log('📥 Received categories_find_all request');
@@ -56,7 +56,7 @@ export class TicketCategoryController {
     }
   }
 
-  @MessagePattern('categories_find_one')
+  @MessagePattern('categories/:id')
   async findOneCategory(@Payload() data: { id: number }) {
     try {
       this.logger.log(`📥 Received categories_find_one request for ID: ${data.id}`);
@@ -83,8 +83,8 @@ export class TicketCategoryController {
     }
   }
 
-  @MessagePattern('categories_create')
-  async createCategory(@Payload() data: { createCategoryDto: CreateCategoryDto; userId: number }) {
+  @MessagePattern('categories')
+  async createCategory(@Payload() data: { createCategoryDto: CreateTicketCategoryDto; userId: number }) {
     try {
       this.logger.log(`📥 Received categories_create request from user: ${data.userId}`);
       

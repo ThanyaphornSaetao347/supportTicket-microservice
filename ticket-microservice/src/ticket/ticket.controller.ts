@@ -1,13 +1,58 @@
 // ticket-service/src/ticket/ticket.controller.ts
-import { Controller } from '@nestjs/common';
+import { Controller, BadRequestException } from '@nestjs/common';
 import { MessagePattern, Payload, Ctx, KafkaContext } from '@nestjs/microservices';
 import { TicketService } from './ticket.service';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { UpdateTicketDto } from './dto/update-ticket.dto';
 
-@Controller()
+@Controller('api')
 export class TicketController {
   constructor(private readonly ticketService: TicketService) {}
+
+  @MessagePattern('saveTicket')  // subscribe topic หรือ pattern นี้
+  async handleSaveTicket(@Payload() data: any, @Ctx() context: KafkaContext) {
+    try {
+      const { dto, userId } = data;
+      if (!dto || !userId) {
+        throw new BadRequestException('dto และ userId ต้องระบุใน payload');
+      }
+      const result = await this.ticketService.saveTicket(dto, userId);
+      return { code: 0, message: 'Save ticket success', data: result };
+    } catch (error) {
+      return { code: 1, message: error.message || 'Error saving ticket' };
+    }
+  }
+
+  @MessagePattern('getTicketData') // ชื่อ Kafka topic หรือ pattern
+  async handleGetTicketData(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext
+  ) {
+    try {
+      const { ticket_no, baseUrl } = payload;
+
+      if (!ticket_no || !baseUrl) {
+        return {
+          code: 1,
+          message: 'ticket_no และ baseUrl เป็นข้อมูลที่จำเป็น',
+        };
+      }
+
+      const result = await this.ticketService.getTicketData(ticket_no, baseUrl);
+
+      return {
+        code: 0,
+        message: 'ดึงข้อมูล ticket สำเร็จ',
+        data: result,
+      };
+    } catch (error) {
+      console.error('Error in handleGetTicketData:', error);
+      return {
+        code: 1,
+        message: error.message || 'เกิดข้อผิดพลาดในการดึงข้อมูล ticket',
+      };
+    }
+  }
 
   // ✅ Ticket status operations
   @MessagePattern('tickets_update_status')

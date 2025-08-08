@@ -2,14 +2,14 @@ import { Controller, Logger } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { TicketStatusService } from './ticket_status.service';
 
-@Controller()
+@Controller('api')
 export class TicketStatusController {
   private readonly logger = new Logger(TicketStatusController.name);
 
   constructor(private readonly statusService: TicketStatusService) {}
 
   // ✅ รับคำขอสร้าง status ใหม่
-  @MessagePattern('status.create')
+  @MessagePattern('status')
   async createStatus(@Payload() data: {
     create_by: number;
     statusLang: Array<{
@@ -31,7 +31,7 @@ export class TicketStatusController {
   }
 
   // ✅ รับคำขอดึงรายการ status
-  @MessagePattern('status.get.dropdown')
+  @MessagePattern('getStatusDDL')
   async getStatusDropdown(@Payload() data: { language_id?: string }) {
     try {
       this.logger.log(`📥 Received status.get.dropdown request for language: ${data.language_id}`);
@@ -76,7 +76,7 @@ export class TicketStatusController {
   }
 
   // ✅ รับคำขอดึง history ของ ticket
-  @MessagePattern('ticket.history.get')
+  @MessagePattern('ticketHistory/:id')
   async getTicketHistory(@Payload() data: { ticket_id: number }) {
     try {
       this.logger.log(`📥 Received ticket.history.get request for ticket ${data.ticket_id}`);
@@ -99,7 +99,7 @@ export class TicketStatusController {
   }
 
   // ✅ รับคำขอดึง status ปัจจุบันของ ticket
-  @MessagePattern('ticket.status.get')
+  @MessagePattern(':id/status')
   async getTicketStatus(@Payload() data: {
     ticket_id: number;
     language_id?: string;

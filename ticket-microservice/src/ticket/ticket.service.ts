@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, SelectQueryBuilder } from 'typeorm';
 import { Ticket } from './entities/ticket.entity';
@@ -8,6 +8,8 @@ import { TicketAttachment } from '../ticket_attachment/entities/ticket_attachmen
 import { AttachmentService } from '../ticket_attachment/ticket_attachment.service';
 import { TicketAssigned } from '../ticket_assigned/entities/ticket_assigned.entity';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
+import { ClientKafka } from '@nestjs/microservices';
+import { firstValueFrom, timeout } from 'rxjs';
 
 @Injectable()
 export class TicketService {
@@ -22,6 +24,70 @@ export class TicketService {
     private readonly dataSource: DataSource,
     private readonly kafkaService: KafkaService,
   ) {}
+
+  async saveTicket(dto: any, userId: number): Promise<{ ticket_id: number; ticket_no: string }> {
+    try {
+      if (!dto) throw new BadRequestException('Request body is required');
+
+      const now = new Date();
+      let ticket;
+      let shouldSaveStatusHistory = false;
+      let oldStatusId = null;
+      let newStatusId = dto.status_id || 1;
+
+      if (dto.ticket_id) {
+        ticket = await this.ticketRepo.findOne({ where: { id: dto.ticket_id } });
+        if (!ticket) throw new BadRequestException('ไม่พบ ticket ที่ต้องการอัปเดต');
+
+        oldStatusId = ticket.status_id;
+        ticket.project_id = dto.project_id;
+        ticket.categories_id = dto.categories_id;
+        ticket.issue_description = dto.issue_description;
+        ticket.status_id = newStatusId;
+        ticket.issue_attachment = dto.issue_attachment || ticket.issue_attachment;
+        ticket.update_by = userId;
+        ticket.update_date = now;
+
+        await this.ticketRepo.save(ticket);
+
+        if (oldStatusId !== newStatusId) {
+          shouldSaveStatusHistory = true;
+        }
+      } else {
+        const ticketNo = await this.generateTicketNumber();
+
+        ticket = this.ticketRepo.create({
+          ticket_no: ticketNo,
+          project_id: dto.project_id,
+          categories_id: dto.categories_id,
+          issue_description: dto.issue_description,
+          status_id: newStatusId,
+          create_by: userId,
+          create_date: now,
+          update_by: userId,
+          update_date: now,
+          isenabled: true,
+        });
+
+        ticket = await this.ticketRepo.save(ticket);
+        shouldSaveStatusHistory = true;
+      }
+
+      if (shouldSaveStatusHistory) {
+        await this.kafkaService.sendMessage('status-history-topic', {
+          ticket_id: ticket.id,
+          status_id: newStatusId,
+          user_id: userId,
+          create_date: now,
+        });
+      }
+
+      return { ticket_id: ticket.id, ticket_no: ticket.ticket_no };
+    } catch (error) {
+      console.error('Error in saveTicket:', error);
+      throw error;
+    }
+  }
 
   async getTicketsByUser(userId: number, filters?: { statusId?: number; startDate?: string; endDate?: string }) {
     let query: SelectQueryBuilder<Ticket> = this.ticketRepo.createQueryBuilder('ticket')

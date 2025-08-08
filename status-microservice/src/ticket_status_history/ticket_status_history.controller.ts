@@ -2,14 +2,14 @@ import { Controller, Logger } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { TicketStatusHistoryService } from './ticket_status_history.service';
 
-@Controller()
+@Controller('api')
 export class TicketStatusHistoryController {
   private readonly logger = new Logger(TicketStatusHistoryController.name);
 
   constructor(private readonly historyService: TicketStatusHistoryService) {}
 
   // ✅ รับคำขอสร้าง history entry ใหม่
-  @MessagePattern('history.create')
+  @MessagePattern('history/:ticketId')
   async createHistory(@Payload() data: {
     ticket_id: number;
     status_id: number;
@@ -50,7 +50,7 @@ export class TicketStatusHistoryController {
   }
 
   // ✅ รับคำขอดึง current status ของ ticket
-  @MessagePattern('history.current_status.get')
+  @MessagePattern('ticket/:ticketId/current-status')
   async getCurrentStatus(@Payload() data: { ticket_id: number }) {
     try {
       this.logger.log(`📥 Received history.current_status.get for ticket ${data.ticket_id}`);

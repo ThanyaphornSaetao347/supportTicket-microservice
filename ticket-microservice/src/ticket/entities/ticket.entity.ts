@@ -1,7 +1,6 @@
 // src/entities/ticket.entity.ts
 import { Entity, PrimaryGeneratedColumn, Column, OneToMany, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn, OneToOne } from 'typeorm';
 import { TicketAttachment } from '../../ticket_attachment/entities/ticket_attachment.entity';
-import { TicketCategory } from '../../ticket_categories/entities/ticket_category.entity';
 @Entity('ticket')
 export class Ticket {
   @PrimaryGeneratedColumn()
@@ -64,8 +63,4 @@ export class Ticket {
 
   @OneToMany(() => TicketAttachment, attachment => attachment.ticket, { cascade: true })
   attachments: TicketAttachment[];
-  
-  @ManyToOne(() => TicketCategory, category => category.ticket)
-  @JoinColumn({ name: 'categories_id'})
-  categories: TicketCategory
 }
