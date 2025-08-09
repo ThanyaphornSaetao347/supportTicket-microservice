@@ -2,7 +2,7 @@
 FROM node:18-alpine
 
 # Set working directory
-WORKDIR /usr/src/api-gateway
+WORKDIR /usr/src/categories
 
 # Install dependencies only when needed
 COPY package*.json ./
@@ -19,7 +19,7 @@ COPY . .
 RUN npm run build
 
 # Expose the port used by this microservice (เปลี่ยนตามจริง)
-EXPOSE 3001
+EXPOSE 3010
 
 # Default command
 CMD ["npm", "run", "start:prod"]

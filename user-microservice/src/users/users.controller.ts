@@ -8,7 +8,7 @@ import { MessagePattern, Payload } from '@nestjs/microservices';
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
-  @MessagePattern('user_create')
+  @MessagePattern('users')
   async create(@Payload() message: any) {
     const createUserDto: CreateUserDto = message.value.createUserDto;
     const userId: number = message.value.userId;

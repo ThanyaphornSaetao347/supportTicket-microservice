@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import { Customer } from './entities/customer.entity';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
-import { KafkaService } from '../../../libs/common/src/kafka/kafka.service';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
 
 @Injectable()
 export class CustomerService {

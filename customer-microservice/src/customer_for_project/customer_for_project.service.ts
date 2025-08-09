@@ -6,7 +6,7 @@ import { CustomerForProject } from './entities/customer_for_project.entity';
 import { Customer } from '../customer/entities/customer.entity';
 import { CreateCustomerForProjectDto } from './dto/create-customer_for_project.dto';
 import { UpdateCustomerForProjectDto } from './dto/update-customer_for_project.dto';
-import { KafkaService } from '../../../libs/common/src/kafka/kafka.service';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
 
 @Injectable()
 export class CustomerForProjectService {

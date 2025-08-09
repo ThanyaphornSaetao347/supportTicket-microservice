@@ -1,8 +1,11 @@
 # Base image
 FROM node:18-alpine
 
+# ติดตั้ง build tools สำหรับ bcrypt
+RUN apk add --no-cache python3 make g++
+
 # Set working directory
-WORKDIR /usr/src/api-gateway
+WORKDIR /usr/src/auth
 
 # Install dependencies only when needed
 COPY package*.json ./
@@ -19,7 +22,7 @@ COPY . .
 RUN npm run build
 
 # Expose the port used by this microservice (เปลี่ยนตามจริง)
-EXPOSE 3001
+EXPOSE 3002
 
 # Default command
 CMD ["npm", "run", "start:prod"]

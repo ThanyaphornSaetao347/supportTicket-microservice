@@ -5,7 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { UsersAllowRole } from './entities/users_allow_role.entity';
 import { Repository, In } from 'typeorm';
 import { MasterRole } from '../master_role/entities/master_role.entity';
-import { KafkaService } from '../../../libs/common/src/kafka/kafka.service';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
 
 @Injectable()
 export class UserAllowRoleService {

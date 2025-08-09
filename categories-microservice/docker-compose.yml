@@ -1,10 +1,10 @@
 
 services:
-  api-gateway:
-    container_name: api-gateway
+  categories-service:
+    container_name: categories-service
     build: .
     ports:
-      - "3001:3001"
+      - "3010:3010"
     env_file:
       - ./.env
     networks:
