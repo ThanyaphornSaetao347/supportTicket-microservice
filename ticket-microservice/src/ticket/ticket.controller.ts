@@ -9,7 +9,7 @@ import { UpdateTicketDto } from './dto/update-ticket.dto';
 export class TicketController {
   constructor(private readonly ticketService: TicketService) {}
 
-  @MessagePattern('saveTicket')  // subscribe topic หรือ pattern นี้
+  @MessagePattern('save_ticket')  // subscribe topic หรือ pattern นี้
   async handleSaveTicket(@Payload() data: any, @Ctx() context: KafkaContext) {
     try {
       const { dto, userId } = data;
@@ -23,7 +23,7 @@ export class TicketController {
     }
   }
 
-  @MessagePattern('getTicketData') // ชื่อ Kafka topic หรือ pattern
+  @MessagePattern('get_ticket_data') // ชื่อ Kafka topic หรือ pattern
   async handleGetTicketData(
     @Payload() payload: any,
     @Ctx() context: KafkaContext
@@ -368,6 +368,71 @@ export class TicketController {
         message: error.message,
         data: null,
       };
+    }
+  }
+
+  @MessagePattern('ticket-requests')
+  async handleTicketRequests(@Payload() message: any, @Ctx() context: KafkaContext) {
+    try {
+      const { action, correlationId, responseTopic, ...data } = message.value;
+      let result;
+
+      switch (action) {
+        case 'create':
+          result = await this.ticketService.createTicket(data);
+          break;
+        case 'updateStatus':
+          result = await this.ticketService.updateTicketStatus(
+            data.ticketId, data.statusId, data.userId, data.comment
+          );
+          break;
+        case 'getTicketData':
+          result = await this.ticketService.getTicketData(data.ticket_no, data.baseUrl);
+          break;
+        case 'getAllMasterFilter':
+          result = await this.ticketService.getAllMasterFilter(data.userId);
+          break;
+        case 'createSatisfaction':
+          result = await this.ticketService.createSatisfaction(
+            data.ticketNo, data.rating, data.comment, data.userId
+          );
+          break;
+        default:
+          throw new Error(`Unknown action: ${action}`);
+      }
+
+      // Send response back
+      if (correlationId && responseTopic) {
+        await context.getProducer().send({
+          topic: responseTopic,
+          messages: [{
+            value: JSON.stringify({
+              correlationId,
+              success: true,
+              data: result
+            })
+          }]
+        });
+      }
+
+      return { success: true, data: result };
+    } catch (error) {
+      const { correlationId, responseTopic } = message.value;
+      
+      if (correlationId && responseTopic) {
+        await context.getProducer().send({
+          topic: responseTopic,
+          messages: [{
+            value: JSON.stringify({
+              correlationId,
+              success: false,
+              message: error.message
+            })
+          }]
+        });
+      }
+
+      return { success: false, message: error.message };
     }
   }
 }

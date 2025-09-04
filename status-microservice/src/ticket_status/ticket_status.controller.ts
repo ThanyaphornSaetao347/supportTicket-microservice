@@ -1,15 +1,22 @@
 import { Controller, Logger } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { TicketStatusService } from './ticket_status.service';
+import { TicketStatusHistoryService } from '../ticket_status_history/ticket_status_history.service';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
+import { KafkaContext, Ctx } from '@nestjs/microservices';
 
 @Controller('api')
 export class TicketStatusController {
   private readonly logger = new Logger(TicketStatusController.name);
 
-  constructor(private readonly statusService: TicketStatusService) {}
+  constructor(
+    private readonly statusService: TicketStatusService,
+    private readonly historyService: TicketStatusHistoryService,
+    private readonly kafkaService: KafkaService,
+  ) {}
 
   // ✅ รับคำขอสร้าง status ใหม่
-  @MessagePattern('status')
+  @MessagePattern('create_status')
   async createStatus(@Payload() data: {
     create_by: number;
     statusLang: Array<{
@@ -31,7 +38,7 @@ export class TicketStatusController {
   }
 
   // ✅ รับคำขอดึงรายการ status
-  @MessagePattern('getStatusDDL')
+  @MessagePattern('get_status_ddl')
   async getStatusDropdown(@Payload() data: { language_id?: string }) {
     try {
       this.logger.log(`📥 Received status.get.dropdown request for language: ${data.language_id}`);
@@ -47,7 +54,7 @@ export class TicketStatusController {
   }
 
   // ✅ รับคำขออัพเดท status ของ ticket
-  @MessagePattern('ticket.status.update')
+  @MessagePattern('ticket-status-update')
   async updateTicketStatus(@Payload() data: {
     ticket_id: number;
     new_status_id: number;
@@ -76,7 +83,7 @@ export class TicketStatusController {
   }
 
   // ✅ รับคำขอดึง history ของ ticket
-  @MessagePattern('ticketHistory/:id')
+  @MessagePattern('ticket_history_id')
   async getTicketHistory(@Payload() data: { ticket_id: number }) {
     try {
       this.logger.log(`📥 Received ticket.history.get request for ticket ${data.ticket_id}`);
@@ -99,7 +106,7 @@ export class TicketStatusController {
   }
 
   // ✅ รับคำขอดึง status ปัจจุบันของ ticket
-  @MessagePattern(':id/status')
+  @MessagePattern('status_id')
   async getTicketStatus(@Payload() data: {
     ticket_id: number;
     language_id?: string;
@@ -147,5 +154,89 @@ export class TicketStatusController {
     // บันทึกผลการ validate หรือดำเนินการต่อตามที่ต้องการ
     // ในกรณีนี้เราจะส่งต่อไปยัง service
     return await this.statusService.handleTicketValidation(data);
+  }
+
+  @MessagePattern('status-requests')
+  async handleStatusRequests(@Payload() message: any, @Ctx() context: KafkaContext) {
+    try {
+      const { action, correlationId, responseTopic, ...data } = message.value;
+      let result;
+
+      switch (action) {
+        case 'getById':
+          result = await this.statusService.getStatusById(data.statusId, data.languageId);
+          break;
+        case 'getAll':
+          result = await this.statusService.getAllStatuses(data.languageId);
+          break;
+        default:
+          throw new Error(`Unknown action: ${action}`);
+      }
+
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: result.success,
+          data: result.data,
+          message: result.message
+        });
+      }
+
+      return result;
+    } catch (error) {
+      const { correlationId, responseTopic } = message.value;
+      
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: false,
+          message: error.message
+        });
+      }
+
+      return { success: false, message: error.message };
+    }
+  }
+
+  @MessagePattern('status-history-requests')
+  async handleStatusHistoryRequests(@Payload() message: any, @Ctx() context: KafkaContext) {
+    try {
+      const { action, correlationId, responseTopic, ...data } = message.value;
+      let result;
+
+      switch (action) {
+        case 'create':
+          result = await this.historyService.createStatusHistory(data.data);
+          break;
+        case 'getByTicket':
+          result = await this.historyService.getHistoryByTicket(data.ticketId);
+          break;
+        default:
+          throw new Error(`Unknown action: ${action}`);
+      }
+
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: result.success,
+          data: result.data,
+          message: result.message
+        });
+      }
+
+      return result;
+    } catch (error) {
+      const { correlationId, responseTopic } = message.value;
+      
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: false,
+          message: error.message
+        });
+      }
+
+      return { success: false, message: error.message };
+    }
   }
 }

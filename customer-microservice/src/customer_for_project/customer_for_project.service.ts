@@ -1,5 +1,5 @@
 // customer_for_project.service.ts (Fixed)
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CustomerForProject } from './entities/customer_for_project.entity';
@@ -7,6 +7,8 @@ import { Customer } from '../customer/entities/customer.entity';
 import { CreateCustomerForProjectDto } from './dto/create-customer_for_project.dto';
 import { UpdateCustomerForProjectDto } from './dto/update-customer_for_project.dto';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
+import { ClientKafka } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class CustomerForProjectService {
@@ -15,8 +17,22 @@ export class CustomerForProjectService {
     private customerForProjectRepository: Repository<CustomerForProject>,
     @InjectRepository(Customer)
     private customerRepository: Repository<Customer>,
+    @Inject('PROJECT_SERVICE') private readonly projectClient: ClientKafka,
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
     private kafkaService: KafkaService,
-  ) {}
+  ) { }
+
+  async onModuleInit() {
+    // project
+    this.projectClient.subscribeToResponseOf('get-projects-by-ids');
+
+    await this.projectClient.connect();
+
+    // user
+    this.userClient.subscribeToResponseOf('user.findIds');
+
+    await this.userClient.connect();
+  }
 
   async create(createDto: CreateCustomerForProjectDto) {
     if (!createDto.project_id || !createDto.customer_id || !createDto.user_id) {
@@ -86,13 +102,21 @@ export class CustomerForProjectService {
     };
   }
 
+  async getProjectIdsForUser(user_id: number) {
+    return this.customerForProjectRepository
+      .find({
+        where: { user_id },
+        select: ['project_id']
+      });
+  }
+
   async findAll() {
     const records = await this.customerForProjectRepository.find({
       where: { isenabled: true },
       relations: ['customer'], // เฉพาะ customer
       order: { create_date: 'DESC' }
     });
-    
+
     return {
       code: '2',
       status: true,
@@ -101,14 +125,41 @@ export class CustomerForProjectService {
     };
   }
 
-  // ❌ ลบ findAllByUser() method ออกเพราะใช้ cross-service relations
+  async findAllByUser(user_id: number) {
+    const records = await this.customerForProjectRepository.find({
+      where: { user_id, isenabled: true },
+    });
+
+    const projectIds = records.map(r => r.project_id);
+    const userIds = records.map(r => r.user_id);
+
+    const [projects, users] = await Promise.all([
+      firstValueFrom(this.projectClient.send('project.findByIds', { ids: projectIds })),
+      firstValueFrom(this.userClient.send('user.findByIds', { ids: userIds })),
+    ]);
+
+    const projectMap = new Map(projects.map(p => [p.id, p]));
+    const userMap = new Map(users.map(u => [u.id, u]));
+
+    return {
+      code: 1,
+      status: true,
+      message: 'Success',
+      data: records.map(r => ({
+        id: r.id,
+        customerId: r.customer_id,
+        project: projectMap.get(r.project_id) || null,
+        user: userMap.get(r.user_id) || null,
+      })),
+    };
+  }
 
   async findOne(id: number) {
     const record = await this.customerForProjectRepository.findOne({
       where: { id, isenabled: true },
       relations: ['customer'] // ✅ เฉพาะ customer relation
     });
-    
+
     if (!record) {
       return {
         status: 0,
@@ -116,7 +167,7 @@ export class CustomerForProjectService {
         data: null
       };
     }
-    
+
     return {
       status: 1,
       message: 'Success',
@@ -126,7 +177,7 @@ export class CustomerForProjectService {
 
   async update(id: number, updateDto: UpdateCustomerForProjectDto, userId: number) {
     const record = await this.customerForProjectRepository.findOneBy({ id, isenabled: true });
-    
+
     if (!record) {
       return {
         status: 0,
@@ -134,7 +185,7 @@ export class CustomerForProjectService {
         data: null
       };
     }
-    
+
     if (updateDto.customer_id) {
       const customer = await this.customerRepository.findOneBy({ id: updateDto.customer_id });
       if (!customer) {
@@ -146,16 +197,16 @@ export class CustomerForProjectService {
       }
       record.customer_id = updateDto.customer_id;
     }
-    
+
     if (updateDto.user_id !== undefined) {
       record.user_id = updateDto.user_id;
       record.update_by = updateDto.user_id;
     }
-    
+
     record.update_date = new Date();
-    
+
     await this.customerForProjectRepository.save(record);
-    
+
     return {
       status: 1,
       message: 'อัพเดทข้อมูลสำเร็จ',
@@ -165,7 +216,7 @@ export class CustomerForProjectService {
 
   async remove(id: number) {
     const record = await this.customerForProjectRepository.findOneBy({ id, isenabled: true });
-    
+
     if (!record) {
       return {
         status: 0,
@@ -173,10 +224,10 @@ export class CustomerForProjectService {
         data: null
       };
     }
-    
+
     record.isenabled = false;
     await this.customerForProjectRepository.save(record);
-    
+
     return {
       status: 1,
       message: 'ลบข้อมูลสำเร็จ',
@@ -186,7 +237,7 @@ export class CustomerForProjectService {
 
   async changeUserAssignment(id: number, newUserId: number, currentUserId: number) {
     const record = await this.customerForProjectRepository.findOneBy({ id, isenabled: true });
-    
+
     if (!record) {
       return {
         status: 0,
@@ -194,13 +245,13 @@ export class CustomerForProjectService {
         data: null
       };
     }
-    
+
     record.user_id = newUserId;
     record.update_date = new Date();
     record.update_by = currentUserId;
-    
+
     await this.customerForProjectRepository.save(record);
-    
+
     return {
       status: 1,
       message: 'เปลี่ยนผู้รับผิดชอบสำเร็จ',
@@ -252,7 +303,7 @@ export class CustomerForProjectService {
 
     return {
       status: 1,
-      message: 'Success',  
+      message: 'Success',
       data: records.map(record => ({
         id: record.id,
         projectId: record.project_id, // ✅ ส่งแค่ ID
@@ -261,7 +312,32 @@ export class CustomerForProjectService {
     };
   }
 
-  // ❌ ลบ getUsersByCustomer() method ออกเพราะใช้ record.users
+  async getUsersByCustomer(customer_id: number) {
+    const records = await this.customerForProjectRepository.find({
+      where: { customer_id, isenabled: true },
+    });
+
+    if (records.length === 0) {
+      return {
+        status: 0,
+        message: 'ไม่พบข้อมูล users ของลูกค้านี้',
+        data: null
+      };
+    }
+
+    const userIds = [...new Set(records.map(r => r.user_id))];
+
+    const users = await firstValueFrom(
+      this.userClient.send('user.findByIds', { ids: userIds })
+    );
+
+    return {
+      code: 2,
+      status: true,
+      message: 'Success',
+      data: users
+    };
+  }
 
   async getCustomerProjectsByUser(userId: number) {
     const records = await this.customerForProjectRepository.find({
@@ -279,7 +355,7 @@ export class CustomerForProjectService {
     }
 
     const customerMap = new Map();
-    
+
     records.forEach(record => {
       if (!customerMap.has(record.customer.id)) {
         customerMap.set(record.customer.id, {
@@ -288,7 +364,7 @@ export class CustomerForProjectService {
           projects: []
         });
       }
-      
+
       // ✅ ส่งแค่ project_id
       customerMap.get(record.customer.id).projects.push({
         id: record.project_id, // ✅ ส่งแค่ ID

@@ -1,59 +1,83 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
-import { CreateUsersAllowRoleDto } from './dto/create-users_allow_role.dto';
-import { UpdateUsersAllowRoleDto } from './dto/update-users_allow_role.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { UsersAllowRole } from './entities/users_allow_role.entity';
 import { Repository, In } from 'typeorm';
+import { UsersAllowRole } from './entities/users_allow_role.entity';
 import { MasterRole } from '../master_role/entities/master_role.entity';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
+import { RoleAssignmentResponse } from '../libs/common/interfaces/user-response.interface';
+
+export interface CreateUsersAllowRoleDto {
+  user_id: number;
+  role_id: number[];
+}
 
 @Injectable()
 export class UserAllowRoleService {
   constructor(
     @InjectRepository(UsersAllowRole)
     private userAllowRepo: Repository<UsersAllowRole>,
-
     @InjectRepository(MasterRole)
     private masterRepo: Repository<MasterRole>,
-    
     private kafkaService: KafkaService,
   ) {}
 
-  async create(createUserAllowRoleDto: CreateUsersAllowRoleDto): Promise<UsersAllowRole[]> {
-    const { user_id, role_id } = createUserAllowRoleDto;
-    
-    const roles = await this.masterRepo.findBy({ id: In(role_id) });
-    if (roles.length !== role_id.length) {
-      throw new NotFoundException('One or more roles not found');
+  async create(createUserAllowRoleDto: CreateUsersAllowRoleDto): Promise<RoleAssignmentResponse> {
+    try {
+      const { user_id, role_id } = createUserAllowRoleDto;
+      
+      const roles = await this.masterRepo.findBy({ id: In(role_id) });
+      if (roles.length !== role_id.length) {
+        return {
+          success: false,
+          message: 'One or more roles not found'
+        };
+      }
+
+      const existingRoles = await this.userAllowRepo.find({
+        where: { user_id },
+      });
+      
+      const existingRoleIds = existingRoles.map(ur => ur.role_id);
+      const newRoleIds = role_id.filter(roleId => !existingRoleIds.includes(roleId));
+
+      if (newRoleIds.length === 0) {
+        return {
+          success: false,
+          message: 'All roles are already assigned to this user'
+        };
+      }
+
+      const newAssignments = newRoleIds.map(role_id_item => 
+        this.userAllowRepo.create({ 
+          user_id, 
+          role_id: role_id_item,
+        })
+      );
+
+      await this.userAllowRepo.save(newAssignments);
+      
+      // ✅ Send Kafka event
+      await this.kafkaService.emitUserRoleChanged({
+        userId: user_id,
+        roleIds: newRoleIds,
+        action: 'ROLES_ASSIGNED',
+        timestamp: new Date().toISOString(),
+      });
+      
+      const updatedRoles = await this.findByUserId(user_id);
+      
+      return {
+        success: true,
+        message: 'Roles assigned successfully',
+        data: updatedRoles
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: 'Failed to assign roles',
+        error: error.message
+      };
     }
-
-    const existingRoles = await this.userAllowRepo.find({
-      where: { user_id },
-    });
-    
-    const existingRoleIds = existingRoles.map(ur => ur.role_id);
-    const newRoleIds = role_id.filter(roleId => !existingRoleIds.includes(roleId));
-
-    if (newRoleIds.length === 0) {
-      throw new ConflictException('All roles are already assigned to this user');
-    }
-
-    const newAssignments = newRoleIds.map(role_id_item => 
-      this.userAllowRepo.create({ user_id, role_id: role_id_item })
-    );
-
-    await this.userAllowRepo.save(newAssignments);
-    
-    // 🎉 Send Kafka event
-    await this.kafkaService.sendMessage('user-events', {
-      eventType: 'USER_ROLE_CHANGED',
-      userId: user_id,
-      roleIds: role_id,
-      action: 'ROLES_ASSIGNED',
-      timestamp: new Date(),
-    });
-    
-    return await this.findByUserId(user_id);
   }
 
   async findAll(): Promise<UsersAllowRole[]> {
@@ -94,83 +118,117 @@ export class UserAllowRoleService {
     return userRole;
   }
 
-  async remove(user_id: number, role_id: number): Promise<void> {
-    const userRole = await this.userAllowRepo.findOne({
-      where: { user_id, role_id },
-    });
+  async remove(user_id: number, role_id: number): Promise<RoleAssignmentResponse> {
+    try {
+      const userRole = await this.userAllowRepo.findOne({
+        where: { user_id, role_id },
+      });
 
-    if (!userRole) {
-      throw new NotFoundException(`User role assignment not found for user_id: ${user_id}, role_id: ${role_id}`);
+      if (!userRole) {
+        return {
+          success: false,
+          message: `User role assignment not found for user_id: ${user_id}, role_id: ${role_id}`
+        };
+      }
+
+      // Soft delete
+      await this.userAllowRepo.save(userRole);
+      
+      // ✅ Send Kafka event
+      await this.kafkaService.emitUserRoleChanged({
+        userId: user_id,
+        roleIds: [role_id],
+        action: 'ROLE_REMOVED',
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: 'Role removed successfully'
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: 'Failed to remove role',
+        error: error.message
+      };
     }
-
-    await this.userAllowRepo.remove(userRole);
-    
-    // 🎉 Send Kafka event
-    await this.kafkaService.sendMessage('user-events', {
-      eventType: 'USER_ROLE_CHANGED',
-      userId: user_id,
-      roleIds: [role_id],
-      action: 'ROLE_REMOVED',
-      timestamp: new Date(),
-    });
   }
 
-  async removeMultiple(user_id: number, role_ids: number[]): Promise<void> {
-    const userRoles = await this.userAllowRepo.find({
-      where: { 
-        user_id, 
-        role_id: In(role_ids) 
-      },
-    });
+  async removeMultiple(user_id: number, role_ids: number[]): Promise<RoleAssignmentResponse> {
+    try {
+      const userRoles = await this.userAllowRepo.find({
+        where: { 
+          user_id, 
+          role_id: In(role_ids),
+        },
+      });
 
-    if (userRoles.length === 0) {
-      throw new NotFoundException(`No role assignments found for user_id: ${user_id} with given role_ids`);
+      if (userRoles.length === 0) {
+        return {
+          success: false,
+          message: `No role assignments found for user_id: ${user_id} with given role_ids`
+        };
+      }
+      
+      await this.userAllowRepo.save(userRoles);
+      
+      // ✅ Send Kafka event
+      await this.kafkaService.emitUserRoleChanged({
+        userId: user_id,
+        roleIds: role_ids,
+        action: 'ROLES_REMOVED',
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: 'Roles removed successfully'
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: 'Failed to remove roles',
+        error: error.message
+      };
     }
-
-    await this.userAllowRepo.remove(userRoles);
-    
-    // 🎉 Send Kafka event
-    await this.kafkaService.sendMessage('user-events', {
-      eventType: 'USER_ROLE_CHANGED',
-      userId: user_id,
-      roleIds: role_ids,
-      action: 'ROLES_REMOVED',
-      timestamp: new Date(),
-    });
   }
 
-  async removeAllByUserId(user_id: number): Promise<void> {
-    const existingRoles = await this.userAllowRepo.find({ where: { user_id } });
-    const roleIds = existingRoles.map(ur => ur.role_id);
-    
-    await this.userAllowRepo.delete({ user_id });
-    
-    // 🎉 Send Kafka event
-    if (roleIds.length > 0) {
-      await this.kafkaService.sendMessage('user-events', {
-        eventType: 'USER_ROLE_CHANGED',
+  async removeAllByUserId(user_id: number): Promise<RoleAssignmentResponse> {
+    try {
+      const existingRoles = await this.userAllowRepo.find({ 
+        where: { user_id } 
+      });
+      
+      if (existingRoles.length === 0) {
+        return {
+          success: false,
+          message: 'No active roles found for user'
+        };
+      }
+
+      const roleIds = existingRoles.map(ur => ur.role_id);
+      
+      await this.userAllowRepo.save(existingRoles);
+      
+      // ✅ Send Kafka event
+      await this.kafkaService.emitUserRoleChanged({
         userId: user_id,
         roleIds: roleIds,
         action: 'ALL_ROLES_REMOVED',
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
       });
-    }
-  }
 
-  async removeAllByRoleId(role_id: number): Promise<void> {
-    const existingRoles = await this.userAllowRepo.find({ where: { role_id } });
-    const userIds = existingRoles.map(ur => ur.user_id);
-
-    await this.userAllowRepo.delete({ role_id });
-
-    if (userIds.length > 0) {
-      await this.kafkaService.sendMessage('user-events', {
-        eventType: 'USER_ROLE_CHANGED',
-        userIds, // อาจส่งหลาย userId
-        roleId: role_id,
-        action: 'ALL_USERS_ROLE_REMOVED',
-        timestamp: new Date(),
-      });
+      return {
+        success: true,
+        message: 'All roles removed successfully'
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: 'Failed to remove all roles',
+        error: error.message
+      };
     }
   }
 
@@ -204,10 +262,28 @@ export class UserAllowRoleService {
     return userRoles.map(ur => ur.role.role_name);
   }
 
-  async replaceUserRoles(user_id: number, role_ids: number[]): Promise<UsersAllowRole[]> {
-    await this.removeAllByUserId(user_id);
-    
-    const createDto: CreateUsersAllowRoleDto = { user_id, role_id: role_ids };
-    return await this.create(createDto);
+  async replaceUserRoles(user_id: number, role_ids: number[]): Promise<RoleAssignmentResponse> {
+    try {
+      // Remove all existing roles
+      await this.removeAllByUserId(user_id);
+      
+      // Add new roles
+      if (role_ids.length > 0) {
+        const createDto: CreateUsersAllowRoleDto = { user_id, role_id: role_ids };
+        return await this.create(createDto);
+      }
+
+      return {
+        success: true,
+        message: 'User roles replaced successfully',
+        data: []
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: 'Failed to replace user roles',
+        error: error.message
+      };
+    }
   }
 }

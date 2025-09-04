@@ -44,6 +44,27 @@ export class Notification {
     @Column({ type: 'timestamp', nullable: true })
     email_sent_at: Date;
 
+    @Column({ default: false })
+    email_delivered: boolean;
+
+    @Column({ type: 'timestamp', nullable: true })
+    email_delivered_at: Date;
+
+    @Column({ default: false })
+    email_failed: boolean;
+
+    @Column({ type: 'timestamp', nullable: true })
+    email_failed_at: Date;
+
+    @Column({ type: 'text', nullable: true })
+    email_failed_reason: string;
+
+    @Column({ default: false })
+    push_clicked: boolean;
+
+    @Column({ type: 'timestamp', nullable: true })
+    push_clicked_at: Date;
+
     @CreateDateColumn()
     create_date: Date;
 

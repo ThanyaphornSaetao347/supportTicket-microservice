@@ -19,63 +19,63 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     this.logger.log('🎫 Ticket Service Kafka client disconnected');
   }
 
-  // ส่งแบบ fire-and-forget
-  async emitTicketCreated(data: any) {
+  // ✅ Fire-and-forget events
+  async emitTicketCreated(data: any): Promise<void> {
     try {
-      return this.client.emit('ticket.created', data);
+      await this.client.emit('ticket.created', data).toPromise();
     } catch (error) {
       this.logger.error('Failed to emit ticket.created event', error);
       throw error;
     }
   }
 
-  async emitTicketUpdated(data: any) {
+  async emitTicketUpdated(data: any): Promise<void> {
     try {
-      return this.client.emit('ticket.updated', data);
+      await this.client.emit('ticket.updated', data).toPromise();
     } catch (error) {
       this.logger.error('Failed to emit ticket.updated event', error);
       throw error;
     }
   }
 
-  async emitTicketAssigned(data: any) {
+  async emitTicketAssigned(data: any): Promise<void> {
     try {
-      return this.client.emit('ticket.assigned', data);
+      await this.client.emit('ticket.assigned', data).toPromise();
     } catch (error) {
       this.logger.error('Failed to emit ticket.assigned event', error);
       throw error;
     }
   }
 
-  async emitTicketStatusChanged(data: any) {
+  async emitTicketStatusChanged(data: any): Promise<void> {
     try {
-      return this.client.emit('ticket.status.changed', data);
+      await this.client.emit('ticket.status.changed', data).toPromise();
     } catch (error) {
       this.logger.error('Failed to emit ticket.status.changed event', error);
       throw error;
     }
   }
 
-  async emitTicketClosed(data: any) {
+  async emitTicketClosed(data: any): Promise<void> {
     try {
-      return this.client.emit('ticket.closed', data);
+      await this.client.emit('ticket.closed', data).toPromise();
     } catch (error) {
       this.logger.error('Failed to emit ticket.closed event', error);
       throw error;
     }
   }
 
-  async emitTicketCommentAdded(data: any) {
+  async emitTicketCommentAdded(data: any): Promise<void> {
     try {
-      return this.client.emit('ticket.comment.added', data);
+      await this.client.emit('ticket.comment.added', data).toPromise();
     } catch (error) {
       this.logger.error('Failed to emit ticket.comment.added event', error);
       throw error;
     }
   }
 
-  // ส่งแบบ request-response (ถ้าต้องการ)
-  async sendMessage(topic: string, message: any) {
+  // ✅ Request-response (ถ้าต้องการ)
+  async sendMessage(topic: string, message: any): Promise<any> {
     try {
       return await this.client.send(topic, message).toPromise();
     } catch (error) {

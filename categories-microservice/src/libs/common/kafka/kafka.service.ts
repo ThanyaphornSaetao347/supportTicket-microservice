@@ -1,5 +1,6 @@
 import { Injectable, Inject, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { Kafka, Producer } from '@nestjs/microservices/external/kafka.interface';
 
 @Injectable()
 export class KafkaService implements OnModuleInit, OnModuleDestroy {
@@ -10,6 +11,27 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
+
+    const topics = [
+      'categories_all',
+      'categories_id',
+      'categories',
+      'categories_update',
+      'categories_delete',
+      'categories_validate',
+      'categories_debug',
+      'categories_health_check',
+      'create_cate_lang',
+      'get_all_cate_lang',
+      'cate_find_one',
+      'cate_update',
+      'cate_remove',
+      'ticket.created',
+      'ticket.updated',
+      'user.created',
+    ];
+    topics.forEach(topic => this.client.subscribeToResponseOf(topic));
+    
     await this.client.connect();
     this.logger.log('📂 Categories Service Kafka client connected');
   }
@@ -80,6 +102,16 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       return await this.client.send(topic, message).toPromise();
     } catch (error) {
       this.logger.error(`Failed to send message to topic ${topic}`, error);
+      throw error;
+    }
+  }
+
+  async sendResponse(topic: string, message: any): Promise<void> {
+    try {
+      // topic ต้องเป็น string ตัวจริง
+      await this.client.emit(topic, message);
+    } catch (error) {
+      this.logger.error(`Failed to send response to ${topic}:`, error);
       throw error;
     }
   }

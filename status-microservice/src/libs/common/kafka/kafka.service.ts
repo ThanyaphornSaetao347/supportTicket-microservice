@@ -1,14 +1,18 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { Kafka, Producer } from 'kafkajs';
 import { firstValueFrom, timeout } from 'rxjs';
 
 @Injectable()
 export class KafkaService {
   private readonly logger = new Logger(KafkaService.name);
+  private kafka = new Kafka({
+    brokers: ['kafka:29092']
+  });
+  private producer: Producer = this.kafka.producer();
 
   constructor(
-    @Inject('STATUS_SERVICE') 
-    private readonly kafkaClient: ClientKafka
+    @Inject('STATUS_SERVICE') private readonly statusClient: ClientKafka,
   ) {}
 
   // ✅ ขอข้อมูล user จาก User Service
@@ -24,7 +28,7 @@ export class KafkaService {
       
       // ส่งคำขอและรอรับผลตอบกลับ
       const response = await firstValueFrom(
-        this.kafkaClient.send('user.get.info', { user_id: userId })
+        this.statusClient.send('user.get.info', { user_id: userId })
           .pipe(timeout(5000)) // timeout 5 วินาที
       );
 
@@ -56,7 +60,7 @@ export class KafkaService {
       this.logger.log(`📤 Requesting ticket info for ticket ${ticketId}`);
       
       const response = await firstValueFrom(
-        this.kafkaClient.send('ticket.get.info', { ticket_id: ticketId })
+        this.statusClient.send('ticket.get.info', { ticket_id: ticketId })
           .pipe(timeout(5000))
       );
 
@@ -82,7 +86,7 @@ export class KafkaService {
       this.logger.log(`📤 Requesting ticket status sync: ticket ${ticketId} -> status ${newStatusId}`);
       
       const response = await firstValueFrom(
-        this.kafkaClient.send('ticket.status.sync', { 
+        this.statusClient.send('ticket.status.sync', { 
           ticket_id: ticketId, 
           new_status_id: newStatusId 
         }).pipe(timeout(10000))
@@ -117,7 +121,7 @@ export class KafkaService {
   }) {
     try {
       this.logger.log(`📤 Emitting status.created: ${data.status_id}`);
-      return this.kafkaClient.emit('status.created', data);
+      return this.statusClient.emit('status.created', data);
     } catch (error) {
       this.logger.error('Failed to emit status.created', error);
     }
@@ -134,7 +138,7 @@ export class KafkaService {
   }) {
     try {
       this.logger.log(`📤 Emitting status.updated: ${data.status_id}`);
-      return this.kafkaClient.emit('status.updated', data);
+      return this.statusClient.emit('status.updated', data);
     } catch (error) {
       this.logger.error('Failed to emit status.updated', error);
     }
@@ -152,7 +156,7 @@ export class KafkaService {
   }) {
     try {
       this.logger.log(`📤 Emitting ticket.status.changed: ticket ${data.ticket_id}`);
-      return this.kafkaClient.emit('ticket.status.changed', data);
+      return this.statusClient.emit('ticket.status.changed', data);
     } catch (error) {
       this.logger.error('Failed to emit ticket.status.changed', error);
     }
@@ -164,7 +168,7 @@ export class KafkaService {
       this.logger.log(`📤 Requesting ticket validation: ${ticketId}`);
       
       // ส่งคำขอไปยัง ticket service
-      this.kafkaClient.emit('ticket.validate.request', {
+      this.statusClient.emit('ticket.validate.request', {
         ticket_id: ticketId,
         requested_by: 'status-service',
         requested_at: new Date(),
@@ -191,13 +195,22 @@ export class KafkaService {
   }) {
     try {
       this.logger.log(`📤 Requesting notification: ${data.type}`);
-      return this.kafkaClient.emit('notification.request', {
+      return this.statusClient.emit('notification.request', {
         ...data,
         requested_by: 'status-service',
         requested_at: new Date(),
       });
     } catch (error) {
       this.logger.error('Failed to request notification', error);
+    }
+  }
+
+  async sendResponse(topic: string, message: any): Promise<void> {
+    try {
+      await this.statusClient.emit(topic, message);
+    } catch (error) {
+      this.logger.error(`Failed to send response to ${topic}:`, error);
+      throw error;
     }
   }
 }

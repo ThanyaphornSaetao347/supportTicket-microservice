@@ -1,9 +1,14 @@
 import { Injectable, Inject, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { Kafka, Producer } from 'kafkajs';
 
 @Injectable()
 export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaService.name);
+  private kafka = new Kafka({
+    brokers: ['kafka:29092']
+  });
+  private producer: Producer = this.kafka.producer();
 
   constructor(
     @Inject('SATISFACTION_SERVICE') private readonly client: ClientKafka,
@@ -34,5 +39,19 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   // Send requests to other services
   async sendToTicketService(pattern: string, data: any) {
     return this.client.send(pattern, data);
+  }
+
+  async sendResponse(topic: string, message: any): Promise<void> {
+    try {
+      await this.producer.send({
+        topic,
+        messages: [{
+          value: JSON.stringify(message)
+        }]
+      });
+    } catch (error) {
+      this.logger.error(`Failed to send response to ${topic}:`, error);
+      throw error;
+    }
   }
 }

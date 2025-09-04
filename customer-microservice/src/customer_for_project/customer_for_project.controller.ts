@@ -6,58 +6,69 @@ import { UpdateCustomerForProjectDto } from './dto/update-customer_for_project.d
 
 @Controller('api')
 export class CustomerForProjectController {
-  constructor(private readonly customerForProjectService: CustomerForProjectService) {}
+  constructor(private readonly service: CustomerForProjectService) {}
 
-  @MessagePattern('customer_project_create')
-  async create(@Payload() message: any) {
-    const { createDto, userId } = message.value;
-    return this.customerForProjectService.create(createDto);
+  // รับ request จาก API Gateway เพื่อดึง projects ของ user
+  @MessagePattern('customer_get_projects_by_user')
+  async getProjectsByUser(@Payload() payload: any) {
+    const { userId } = payload;
+    const projects = await this.service.getProjectIdsForUser(userId);
+    // projects = [{ projectId: 1 }, { projectId: 2 }]
+    return projects;
   }
 
-  @MessagePattern('customer_project_find_all')
+  @MessagePattern('customer-for-project-create')
+  async create(@Payload() data: { createDto: any }) {
+    return this.service.create(data.createDto);
+  }
+
+  @MessagePattern('customer-for-project-find-all')
   async findAll() {
-    return this.customerForProjectService.findAll();
+    return this.service.findAll();
   }
 
-  @MessagePattern('customer_project_get_customers_by_project')
-  async getCustomersByProject(@Payload() message: any) {
-    const { projectId } = message.value;
-    return this.customerForProjectService.getCustomersByProject(projectId);
+  @MessagePattern('customer-for-project-find-by-user')
+  async findAllByUser(@Payload() data: { userId: number }) {
+    return this.service.findAllByUser(data.userId);
   }
 
-  @MessagePattern('customer_project_get_projects_by_customer')
-  async getProjectsByCustomer(@Payload() message: any) {
-    const { customerId } = message.value;
-    return this.customerForProjectService.getProjectsByCustomer(customerId);
+  @MessagePattern('customer-for-project-find-one')
+  async findOne(@Payload() data: { id: number }) {
+    return this.service.findOne(data.id);
   }
 
-  @MessagePattern('customer_project_find_one')
-  async findOne(@Payload() message: any) {
-    const { id } = message.value;
-    return this.customerForProjectService.findOne(id);
+  @MessagePattern('customer-for-project-update')
+  async update(@Payload() data: { id: number; updateDto: any; userId: number }) {
+    return this.service.update(data.id, data.updateDto, data.userId);
   }
 
-  @MessagePattern('customer_project_update')
-  async update(@Payload() message: any) {
-    const { id, updateDto, userId } = message.value;
-    return this.customerForProjectService.update(id, updateDto, userId);
+  @MessagePattern('customer-for-project-remove')
+  async remove(@Payload() data: { id: number }) {
+    return this.service.remove(data.id);
   }
 
-  @MessagePattern('customer_project_remove')
-  async remove(@Payload() message: any) {
-    const { id } = message.value;
-    return this.customerForProjectService.remove(id);
+  @MessagePattern('customer-for-project-change-user')
+  async changeUserAssignment(@Payload() data: { id: number; newUserId: number; currentUserId: number }) {
+    return this.service.changeUserAssignment(data.id, data.newUserId, data.currentUserId);
   }
 
-  @MessagePattern('customer_project_change_user')
-  async changeUser(@Payload() message: any) {
-    const { id, newUserId, userId } = message.value;
-    return this.customerForProjectService.changeUserAssignment(id, newUserId, userId);
+  @MessagePattern('customer-for-project-by-project')
+  async getCustomersByProject(@Payload() data: { projectId: number }) {
+    return this.service.getCustomersByProject(data.projectId);
   }
 
-  @MessagePattern('customer_project_get_by_user')
-  async getByUser(@Payload() message: any) {
-    const { userId } = message.value;
-    return this.customerForProjectService.getCustomerProjectsByUser(userId);
+  @MessagePattern('customer-for-project-projects-by-customer')
+  async getProjectsByCustomer(@Payload() data: { customerId: number }) {
+    return this.service.getProjectsByCustomer(data.customerId);
+  }
+
+  @MessagePattern('customer-for-project-users-by-customer')
+  async getUsersByCustomer(@Payload() data: { customerId: number }) {
+    return this.service.getUsersByCustomer(data.customerId);
+  }
+
+  @MessagePattern('customer-for-project-by-user')
+  async getCustomerProjectsByUser(@Payload() data: { userId: number }) {
+    return this.service.getCustomerProjectsByUser(data.userId);
   }
 }

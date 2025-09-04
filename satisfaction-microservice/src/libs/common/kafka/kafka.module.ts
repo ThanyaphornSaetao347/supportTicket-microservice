@@ -9,34 +9,43 @@ import { KafkaService } from './kafka.service';
     ClientsModule.registerAsync([
       {
         name: 'SATISFACTION_SERVICE',
-        useFactory: (configService: ConfigService) => ({
-          transport: Transport.KAFKA,
-          options: {
-            client: {
-              clientId: 'satisfaction-service',
-              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+        useFactory: (configService: ConfigService) => {
+          const brokers = configService.get<string>('KAFKA_BROKERS') || 'kafka:29092';
+          const brokersArray = brokers.split(',').map(broker => broker.trim());
+          console.log('Kafka brokers used:', brokersArray);
+          return {
+            transport: Transport.KAFKA,
+            options: {
+              client: {
+                clientId: 'satisfaction-service',
+                brokers: brokersArray,
+              },
+              consumer: {
+                groupId: 'satisfaction-service-consumer',
+              },
+              producer: {
+                allowAutoTopicCreation: true,
+              },
             },
-            consumer: {
-              groupId: 'satisfaction-service-consumer',
-            },
-            producer: {
-              allowAutoTopicCreation: true,
-            },
-          },
-        }),
+          };
+        },
         inject: [ConfigService],
       },
       {
         name: 'TICKET_SERVICE',
-        useFactory: (configService: ConfigService) => ({
-          transport: Transport.KAFKA,
-          options: {
-            client: {
-              clientId: 'satisfaction-to-ticket-client',
-              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+        useFactory: (configService: ConfigService) => {
+          const brokers = configService.get<string>('KAFKA_BROKERS') || 'kafka:29092';
+          const brokersArray = brokers.split(',').map(broker => broker.trim());
+          return {
+            transport: Transport.KAFKA,
+            options: {
+              client: {
+                clientId: 'satisfaction-to-ticket-client',
+                brokers: brokersArray,
+              },
             },
-          },
-        }),
+          };
+        },
         inject: [ConfigService],
       },
     ]),

@@ -1,8 +1,5 @@
 # Base image
-FROM node:18-alpine
-
-# ติดตั้ง build tools สำหรับ bcrypt
-RUN apk add --no-cache python3 make g++
+FROM node:20-alpine
 
 # Set working directory
 WORKDIR /usr/src/auth
@@ -11,7 +8,7 @@ WORKDIR /usr/src/auth
 COPY package*.json ./
 
 # Optional: สำหรับบางเครื่องที่ใช้ `node-gyp`
-# RUN apk add --no-cache python3 make g++
+RUN apk add --no-cache python3 make g++
 
 RUN npm install
 

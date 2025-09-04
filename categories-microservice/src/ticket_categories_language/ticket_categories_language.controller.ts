@@ -8,27 +8,27 @@ import { MessagePattern } from '@nestjs/microservices';
 export class TicketCategoriesLanguageController {
   constructor(private readonly ticketCategoriesLanguageService: TicketCategoriesLanguageService) {}
 
-  @MessagePattern()
+  @MessagePattern('carete_cate_lang')
   create(@Body() createTicketCategoriesLanguageDto: CreateTicketCategoriesLanguageDto) {
     return this.ticketCategoriesLanguageService.create(createTicketCategoriesLanguageDto);
   }
 
-  @MessagePattern()
+  @MessagePattern('get_all_cate_lang')
   findAll() {
     return this.ticketCategoriesLanguageService.findAll();
   }
 
-  @MessagePattern(':id')
+  @MessagePattern('cate_find_one')
   findOne(@Param('id') id: string) {
     return this.ticketCategoriesLanguageService.findOne(+id);
   }
 
-  @MessagePattern(':id')
+  @MessagePattern('cate_update')
   update(@Param('id') id: string, @Body() updateTicketCategoriesLanguageDto: UpdateTicketCategoriesLanguageDto) {
     return this.ticketCategoriesLanguageService.update(+id, updateTicketCategoriesLanguageDto);
   }
 
-  @MessagePattern(':id')
+  @MessagePattern('cate_remove')
   remove(@Param('id') id: string) {
     return this.ticketCategoriesLanguageService.remove(+id);
   }

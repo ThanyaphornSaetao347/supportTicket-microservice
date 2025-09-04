@@ -1,17 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { TicketCategoriesController } from './ticket_categories.controller';
-import { TicketCategoriesService } from './ticket_categories.service';
+import { TicketCategoryController } from './ticket_categories.controller';
+import { TicketCategoryService } from './ticket_categories.service';
 
 describe('TicketCategoriesController', () => {
-  let controller: TicketCategoriesController;
+  let controller: TicketCategoryController;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      controllers: [TicketCategoriesController],
-      providers: [TicketCategoriesService],
+      controllers: [TicketCategoryController],
+      providers: [TicketCategoryService],
     }).compile();
 
-    controller = module.get<TicketCategoriesController>(TicketCategoriesController);
+    controller = module.get<TicketCategoryController>(TicketCategoryController);
   });
 
   it('should be defined', () => {

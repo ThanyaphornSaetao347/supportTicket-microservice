@@ -1,13 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { TicketCategory } from './entities/ticket_category.entity';
 import { TicketCategoryLanguage } from '../ticket_categories_language/entities/ticket_categories_language.entity';
 import { CreateTicketCategoryDto } from './dto/create-ticket_category.dto';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
+import { ClientKafka } from '@nestjs/microservices';
 
 @Injectable()
-export class TicketCategoryService {
+export class TicketCategoryService implements OnModuleInit {
   private readonly logger = new Logger(TicketCategoryService.name);
 
   constructor(
@@ -17,8 +18,86 @@ export class TicketCategoryService {
     @InjectRepository(TicketCategoryLanguage)
     private readonly categoryLangRepo: Repository<TicketCategoryLanguage>,
 
+    @Inject('CATEGORIES_SERVICE') private readonly categoriesClient: ClientKafka,
+
     private readonly kafkaService: KafkaService,
   ) {}
+
+  async onModuleInit() {
+    const topics = [
+      'get_categories_ddl',
+      'categories_all',
+      'categories_id',
+      'categories',
+      'categories_update',
+      'categories_delete',
+      'categories_validate',
+      'categories_debug',
+      'categories_health_check',
+    ];
+
+    topics.forEach(topic => {
+      console.log('Subscribing to topic:', topic);
+      this.categoriesClient.subscribeToResponseOf(topic);
+    });
+
+    await this.categoriesClient.connect();
+  }
+
+  async getAllCategories(languageId: string = 'th') {
+    try {
+      const categories = await this.categoryRepo
+        .createQueryBuilder('tc')
+        .leftJoin('ticket_categories_language', 'tcl', 'tcl.category_id = tc.id AND tcl.language_id = :lang', { lang: languageId })
+        .select([
+          'tc.id AS id',
+          'COALESCE(tcl.name, tc.name) AS name',
+          'tc.isenabled AS isenabled'
+        ])
+        .where('tc.isenabled = true')
+        .getRawMany();
+
+      return {
+        success: true,
+        data: categories
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
+  async getCategoryById(categoryId: number, languageId: string = 'th') {
+    try {
+      const category = await this.categoryRepo
+        .createQueryBuilder('tc')
+        .leftJoin('ticket_categories_language', 'tcl', 'tcl.category_id = tc.id AND tcl.language_id = :lang', { lang: languageId })
+        .select([
+          'tc.id AS id',
+          'COALESCE(tcl.name, tc.name) AS name',
+          'tc.isenabled AS isenabled'
+        ])
+        .where('tc.id = :categoryId', { categoryId })
+        .andWhere('tc.isenabled = true')
+        .getRawOne();
+
+      if (!category) {
+        throw new Error(`Category with id ${categoryId} not found`);
+      }
+
+      return {
+        success: true,
+        data: category
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
 
   async getCategoriesDDL(languageId?: string) {
     try {

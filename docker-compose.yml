@@ -20,32 +20,35 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
-      - "9094:9094"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      # ลบบรรทัดนี้ออก หรือเปลี่ยนเป็นค่าว่าง
-      # KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
-      KAFKA_METRIC_REPORTERS: ""
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      # ลบ Confluent metrics reporter configurations ออก
-      # KAFKA_CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: kafka:29092
-      # KAFKA_CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
-      KAFKA_CONFLUENT_METRICS_ENABLE: 'false'
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_MS: 604800000
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_LOG_CLEANUP_POLICY: delete
+      
     networks:
       - support-network
     volumes:
       - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1
+      interval: 10s
+      retries: 20
+      start_period: 30s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
@@ -62,8 +65,11 @@ services:
       - "3001:3001"
     env_file:
       - ./api-gateway/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -75,8 +81,11 @@ services:
       - "3002:3002"
     env_file:
       - ./auth-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -88,8 +97,11 @@ services:
       - "3003:3003"
     env_file:
       - ./ticket-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -101,8 +113,11 @@ services:
       - "3004:3004"
     env_file:
       - ./notification-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -114,8 +129,11 @@ services:
       - "3005:3005"
     env_file:
       - ./user-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -127,8 +145,11 @@ services:
       - "3006:3006"
     env_file:
       - ./customer-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -140,8 +161,11 @@ services:
       - "3007:3007"
     env_file: 
       - ./project-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -153,8 +177,11 @@ services:
       - "3008:3008"
     env_file:
       - ./satisfaction-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -166,8 +193,11 @@ services:
       - "3009:3009"
     env_file:
       - ./status-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 
@@ -179,8 +209,11 @@ services:
       - "3010:3010"
     env_file:
       - ./categories-microservice/.env
+    environment:
+    - DEBUG=kafkajs*
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - support-network
 

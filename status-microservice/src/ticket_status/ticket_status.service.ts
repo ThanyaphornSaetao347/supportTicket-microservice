@@ -365,4 +365,59 @@ export class TicketStatusService {
       return `Status ${statusId}`;
     }
   }
+
+  async getStatusById(statusId: number, languageId: string = 'th') {
+    try {
+      const result = await this.statusRepo
+        .createQueryBuilder('ts')
+        .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = ts.id AND tsl.language_id = :lang', { lang: languageId })
+        .select([
+          'ts.id AS id',
+          'COALESCE(tsl.name, ts.name) AS name',
+          'ts.isenabled AS isenabled'
+        ])
+        .where('ts.id = :statusId', { statusId })
+        .andWhere('ts.isenabled = true')
+        .getRawOne();
+
+      if (!result) {
+        throw new NotFoundException(`Status with id ${statusId} not found`);
+      }
+
+      return {
+        success: true,
+        data: result
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
+  async getAllStatuses(languageId: string = 'th') {
+    try {
+      const statuses = await this.statusRepo
+        .createQueryBuilder('ts')
+        .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = ts.id AND tsl.language_id = :lang', { lang: languageId })
+        .select([
+          'ts.id AS id',
+          'COALESCE(tsl.name, ts.name) AS name',
+          'ts.isenabled AS isenabled'
+        ])
+        .where('ts.isenabled = true')
+        .getRawMany();
+
+      return {
+        success: true,
+        data: statuses
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
 }

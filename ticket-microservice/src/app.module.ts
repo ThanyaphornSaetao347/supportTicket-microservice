@@ -24,6 +24,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
         database: configService.get('DB_DATABASE'),
         entities: [__dirname + '/**/*.entity{.ts,.js}'],
       }),
+      inject: [ConfigService],
     }),
 
     // Add Kafka Module

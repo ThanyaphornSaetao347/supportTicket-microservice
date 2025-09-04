@@ -27,6 +27,79 @@ export class SatisfactionService implements OnModuleInit {
     this.logger.log('Ticket service client connected');
   }
 
+  async createSatisfaction(satisfactionData: any) {
+    try {
+      const satisfaction = this.satisRepo.create({
+        ticket_id: satisfactionData.ticket_id,
+        rating: satisfactionData.rating,
+        create_by: satisfactionData.create_by,
+        create_date: new Date()
+      });
+
+      const savedSatisfaction = await this.satisRepo.save(satisfaction);
+
+      return {
+        success: true,
+        data: savedSatisfaction
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
+  async getSatisfactionByTicket(ticketId: number) {
+    try {
+      const satisfaction = await this.satisRepo.findOne({
+        where: { ticket_id: ticketId }
+      });
+
+      return {
+        success: true,
+        data: satisfaction
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
+  async getSatisfactionStatistics(filters?: any) {
+    try {
+      const queryBuilder = this.satisRepo.createQueryBuilder('s');
+
+      if (filters?.startDate && filters?.endDate) {
+        queryBuilder.andWhere('s.create_date BETWEEN :startDate AND :endDate', {
+          startDate: filters.startDate,
+          endDate: filters.endDate
+        });
+      }
+
+      const statistics = await queryBuilder
+        .select([
+          'AVG(s.rating) AS average_rating',
+          'COUNT(*) AS total_responses',
+          'COUNT(CASE WHEN s.rating >= 4 THEN 1 END) AS positive_responses',
+          'COUNT(CASE WHEN s.rating <= 2 THEN 1 END) AS negative_responses'
+        ])
+        .getRawOne();
+
+      return {
+        success: true,
+        data: statistics
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
   async saveSatisfaction(ticketNo: string, dto: CreateSatisfactionDto, currentUserId: number) {
     try {
       // ✅ Get ticket info from Ticket Service

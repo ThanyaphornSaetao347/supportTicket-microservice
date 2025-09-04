@@ -73,6 +73,59 @@ export class TicketStatusHistoryService {
       throw error;
     }
   }
+  
+  async createStatusHistory(historyData: any) {
+    try {
+      const history = this.historyRepo.create({
+        ticket_id: historyData.ticket_id,
+        status_id: historyData.status_id,
+        create_by: historyData.create_by,
+        create_date: historyData.create_date || new Date(),
+      });
+
+      const savedHistory = await this.historyRepo.save(history);
+
+      return {
+        success: true,
+        data: savedHistory
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
+  async getHistoryByTicket(ticketId: number) {
+    try {
+      const history = await this.historyRepo
+        .createQueryBuilder('sh')
+        .leftJoin('ticket_status', 'ts', 'ts.id = sh.status_id')
+        .leftJoin('ticket_status_language', 'tsl', 'tsl.status_id = ts.id AND tsl.language_id = :lang', { lang: 'th' })
+        .select([
+          'sh.id AS id',
+          'sh.status_id AS status_id',
+          'sh.create_date AS create_date',
+          'sh.create_by AS create_by',
+          'sh.comment AS comment',
+          'COALESCE(tsl.name, ts.name) AS status_name'
+        ])
+        .where('sh.ticket_id = :ticketId', { ticketId })
+        .orderBy('sh.create_date', 'ASC')
+        .getRawMany();
+
+      return {
+        success: true,
+        data: history
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
 
   // ✅ ดึง history ของ ticket (ปรับแล้ว - ไม่ join users table)
   async getTicketHistory(ticketId: number): Promise<any[]> {

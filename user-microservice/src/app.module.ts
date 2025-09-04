@@ -29,6 +29,7 @@ import { MasterRoleModule } from './master_role/master_role.module';
     }),
 
     KafkaModule,
+    
     UserModule,
     UserAllowRoleModule,
     MasterRoleModule

@@ -23,6 +23,8 @@ export class TicketService {
     private readonly assignRepo: Repository<TicketAssigned>,
     private readonly dataSource: DataSource,
     private readonly kafkaService: KafkaService,
+    @Inject('NOTIFICATION_SERVICE') private readonly notiClient: ClientKafka,
+    @Inject('TICKET_SERVICE') private readonly ticketClient: ClientKafka,
   ) {}
 
   async saveTicket(dto: any, userId: number): Promise<{ ticket_id: number; ticket_no: string }> {
@@ -74,7 +76,7 @@ export class TicketService {
       }
 
       if (shouldSaveStatusHistory) {
-        await this.kafkaService.sendMessage('status-history-topic', {
+        await this.kafkaService.publishTicketCreated({
           ticket_id: ticket.id,
           status_id: newStatusId,
           user_id: userId,
@@ -110,11 +112,8 @@ export class TicketService {
     return tickets;
   }
 
-  // ✅ Update ticket status using Kafka communication
   async updateTicketStatus(ticketId: number, statusId: number, userId: number, comment?: string) {
     try {
-      console.log(`🔄 Updating ticket ${ticketId} status to ${statusId} by user ${userId}`);
-      
       const ticket = await this.ticketRepo.findOne({ where: { id: ticketId } });
       if (!ticket) {
         throw new NotFoundException(`Ticket with id ${ticketId} not found`);
@@ -122,45 +121,35 @@ export class TicketService {
 
       const oldStatusId = ticket.status_id;
 
-      // 1. Get status information via Kafka
+      // Validate status via Kafka
       const statusResult = await this.kafkaService.getTicketStatusById(statusId);
       if (!statusResult.success) {
         throw new BadRequestException('Invalid status ID');
       }
 
-      // 2. Update ticket status
+      // Update ticket status
       ticket.status_id = statusId;
       ticket.update_by = userId;
       ticket.update_date = new Date();
       await this.ticketRepo.save(ticket);
 
-      // 3. Create status history via Kafka
+      // Create status history via Kafka
       await this.kafkaService.createStatusHistory({
         ticket_id: ticketId,
         status_id: statusId,
         create_by: userId,
-        comment
+        comment,
+        create_date: new Date()
       });
 
-      // 4. Send notification via Kafka
-      if (oldStatusId !== statusId) {
-        await this.kafkaService.sendStatusChangeNotification({
-          ticketId,
-          oldStatus: oldStatusId,
-          newStatus: statusId,
-          changedBy: userId,
-          comment
-        });
-
-        // Emit event for other services
-        await this.kafkaService.emitTicketStatusChanged({
-          ticketId,
-          oldStatus: oldStatusId,
-          newStatus: statusId,
-          changedBy: userId,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // Publish status change event
+      await this.kafkaService.publishTicketStatusChanged({
+        ticketId,
+        oldStatus: oldStatusId,
+        newStatus: statusId,
+        changedBy: userId,
+        timestamp: new Date().toISOString()
+      });
 
       return {
         ticketId,
@@ -230,77 +219,50 @@ export class TicketService {
     }
   }
 
-  // ✅ Create ticket with Kafka notifications
   async createTicket(dto: any) {
     try {
       if (!dto.create_by || isNaN(dto.create_by)) {
         throw new BadRequestException('Valid create_by value is required');
       }
-      
-      const userId = dto.userId || dto.create_by;
-      
-      // Validate project access via Kafka
-      if (dto.project_id) {
-        const accessResult = await this.kafkaService.validateUserProjectAccess(userId, dto.project_id);
-        if (!accessResult.success || !accessResult.hasAccess) {
-          throw new ForbiddenException('You do not have access to this project');
-        }
-      }
 
-      // Generate ticket number
       const ticketNo = await this.generateTicketNumber();
       
-      let ticket_id;
-      let status = false;
-
-      if (dto.id) {
-        const result = await this.ticketRepo.findOne({ where: { id: dto.id }});
-        if (result) {
-          ticket_id = result?.id;
-          status = true;
-        }
-      } else {
-        const ticket = this.ticketRepo.create({
-          ticket_no: ticketNo ?? '',
-          categories_id: dto.categories_id ?? '',
-          project_id: dto.project_id ?? '',
-          issue_description: dto.issue_description ?? '',
-          create_date: new Date(),
-          create_by: userId ?? '',
-          update_date: new Date(),
-          update_by: userId ?? '',
-          isenabled: true,
-        });
-        
-        const savedTicket = await this.ticketRepo.save(ticket);
-        ticket_id = savedTicket.id;
-        status = true;
-
-        // Create initial status history via Kafka
-        await this.kafkaService.createStatusHistory({
-          ticket_id: savedTicket.id,
-          status_id: savedTicket.status_id || 1,
-          create_by: userId
-        });
-
-        // Send notifications to supporters via Kafka
-        await this.notifySupporters(savedTicket);
-
-        // Emit ticket created event
-        await this.kafkaService.emitTicketCreated({
-          ticketId: savedTicket.id,
-          ticketNo: savedTicket.ticket_no,
-          createdBy: userId,
-          projectId: dto.project_id,
-          categoryId: dto.categories_id,
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      return {
-        status: status,
-        ticket_id,
+      const ticket = this.ticketRepo.create({
         ticket_no: ticketNo,
+        categories_id: dto.categories_id,
+        project_id: dto.project_id,
+        issue_description: dto.issue_description,
+        create_date: new Date(),
+        create_by: dto.create_by,
+        update_date: new Date(),
+        update_by: dto.create_by,
+        isenabled: true,
+      });
+
+      const savedTicket = await this.ticketRepo.save(ticket);
+
+      // Create initial status history via Kafka
+      await this.kafkaService.createStatusHistory({
+        ticket_id: savedTicket.id,
+        status_id: 1, // Default status
+        create_by: dto.create_by,
+        create_date: new Date()
+      });
+
+      // Publish ticket created event
+      await this.kafkaService.publishTicketCreated({
+        ticket_id: savedTicket.id,
+        ticket_no: savedTicket.ticket_no,
+        create_by: savedTicket.create_by,
+        categories_id: savedTicket.categories_id,
+        project_id: savedTicket.project_id,
+        issue_description: savedTicket.issue_description,
+      });
+
+      return {
+        status: true,
+        ticket_id: savedTicket.id,
+        ticket_no: savedTicket.ticket_no,
         message: 'Ticket created successfully'
       };
     } catch (error) {
@@ -343,36 +305,22 @@ export class TicketService {
     }
   }
 
-  // ✅ Get ticket data with external service information
   async getTicketData(ticket_no: string, baseUrl: string) {
     try {
-      const attachmentPath = '/images/issue_attachment/';
       const normalizedTicketNo = this.normalizeTicketNo(ticket_no);
 
       // Get basic ticket data
       const ticket = await this.ticketRepo
         .createQueryBuilder('t')
-        .leftJoin('ticket_categories_language', 'tcl', 'tcl.category_id = t.categories_id AND tcl.language_id = :lang', { lang: 'th' })
         .select([
           't.id AS id',
           't.ticket_no AS ticket_no',
           't.categories_id AS categories_id',
           't.project_id AS project_id',
           't.issue_description AS issue_description',
-          't.fix_issue_description AS fix_issue_description',
           't.status_id AS status_id',
-          't.close_estimate AS close_estimate',
-          't.estimate_time AS estimate_time',
-          't.due_date AS due_date',
-          't.lead_time AS lead_time',
-          't.related_ticket_id AS related_ticket_id',
-          't.change_request AS change_request',
           't.create_date AS create_date',
-          't.update_date AS update_date',
           't.create_by AS create_by_id',
-          't.update_by AS update_by_id',
-          't.isenabled AS isenabled',
-          'tcl.name AS categories_name',
         ])
         .where('UPPER(t.ticket_no) = UPPER(:ticket_no)', { ticket_no: normalizedTicketNo })
         .andWhere('t.isenabled = true')
@@ -382,49 +330,23 @@ export class TicketService {
         throw new NotFoundException(`ไม่พบ Ticket No: ${normalizedTicketNo}`);
       }
 
-      // Get project info via Kafka
-      const projectResult = await this.kafkaService.getProjectById(ticket.project_id);
-      const projectName = projectResult.success ? projectResult.data?.name : 'Unknown Project';
+      // Get additional data via Kafka
+      const [projectResult, statusResult, categoriesResult] = await Promise.all([
+        this.kafkaService.getProjectById(ticket.project_id),
+        this.kafkaService.getTicketStatusById(ticket.status_id),
+        this.kafkaService.getAllCategories('th')
+      ]);
 
-      // Get status info via Kafka  
-      const statusResult = await this.kafkaService.getTicketStatusById(ticket.status_id);
-      const statusName = statusResult.success ? statusResult.data?.name : 'Unknown Status';
-
-      // Get status history via Kafka
-      const statusHistoryResult = await this.kafkaService.getStatusHistoryByTicket(ticket.id);
-      const statusHistory = statusHistoryResult.success ? statusHistoryResult.data : [];
-
-      // Get attachments (still local)
-      const ticket_id = ticket.id;
-      const issueAttachment = await this.attachmentRepo
-        .createQueryBuilder('a')
-        .select(['a.id AS attachment_id', 'a.extension', 'a.filename'])
-        .where('a.ticket_id = :ticket_id AND a.type = :type', { ticket_id, type: 'reporter' })
-        .andWhere('a.isenabled = true')
-        .getRawMany();
-
-      const fixAttachment = await this.attachmentRepo
-        .createQueryBuilder('a')
-        .select(['a.id AS attachment_id', 'a.extension', 'a.filename'])
-        .where('a.ticket_id = :ticket_id AND a.type = :type', { ticket_id, type: 'supporter' })
-        .andWhere('a.isenabled = true')
-        .getRawMany();
+      const categoryName = categoriesResult.success ? 
+        categoriesResult.data?.find(c => c.id === ticket.categories_id)?.name : 'Unknown Category';
 
       return {
         ticket: {
           ...ticket,
-          project_name: projectName,
-          status_name: statusName,
-        },
-        issue_attachment: issueAttachment.map(a => ({
-          attachment_id: a.attachment_id,
-          path: a.extension ? `${baseUrl}${attachmentPath}${a.attachment_id}.${a.extension}` : `${baseUrl}${attachmentPath}${a.attachment_id}`,
-        })),
-        fix_attachment: fixAttachment.map(a => ({
-          attachment_id: a.attachment_id,
-          path: a.extension ? `${baseUrl}${attachmentPath}${a.attachment_id}.${a.extension}` : `${baseUrl}${attachmentPath}${a.attachment_id}`,
-        })),
-        status_history: statusHistory,
+          project_name: projectResult.success ? projectResult.data?.name : 'Unknown Project',
+          status_name: statusResult.success ? statusResult.data?.name : 'Unknown Status',
+          category_name: categoryName,
+        }
       };
     } catch (error) {
       console.error('Error in getTicketData:', error);
@@ -432,32 +354,26 @@ export class TicketService {
     }
   }
 
-  // ✅ Get all master filters using Kafka
-  async getAllMasterFilter(userId: number): Promise<any> {
+  async getAllMasterFilter(userId: number) {
     try {
-      // ✅ Get categories from categories-microservice via Kafka
-      const categoriesResult = await this.kafkaService.getAllCategories('th');
-      const categories = categoriesResult.success ? categoriesResult.data : [];
-
-      // ✅ Get projects via Kafka
-      const projectsResult = await this.kafkaService.getProjectsByUserId(userId);
-      const projects = projectsResult.success ? projectsResult.data : [];
-
-      // ✅ Get statuses via Kafka
-      const statusResult = await this.kafkaService.getAllTicketStatuses('th');
-      const status = statusResult.success ? statusResult.data : [];
+      // Get all master data via Kafka
+      const [categoriesResult, projectsResult, statusResult] = await Promise.all([
+        this.kafkaService.getAllCategories('th'),
+        this.kafkaService.getProjectsByUserId(userId),
+        this.kafkaService.getAllTicketStatuses('th')
+      ]);
 
       return {
         code: 1,
         message: 'Success',
         data: {
-          categories,
-          projects,
-          status,
+          categories: categoriesResult.success ? categoriesResult.data : [],
+          projects: projectsResult.success ? projectsResult.data : [],
+          status: statusResult.success ? statusResult.data : [],
         },
       };
     } catch (error) {
-      console.error('Error in getAllMasterFilter:', error.message);
+      console.error('Error in getAllMasterFilter:', error);
       return {
         code: 2,
         message: 'เกิดข้อผิดพลาด',
@@ -466,7 +382,6 @@ export class TicketService {
     }
   }
 
-  // ✅ Create satisfaction via Kafka
   async createSatisfaction(ticketNo: string, rating: number, comment: string, currentUserId: number) {
     try {
       const ticket = await this.ticketRepo.findOne({
@@ -477,7 +392,6 @@ export class TicketService {
         throw new NotFoundException(`ไม่พบ ticket หมายเลข ${ticketNo}`);
       }
 
-      // Check if ticket is closed
       if (ticket.status_id !== 5) {
         throw new BadRequestException('สามารถประเมินความพึงพอใจได้เฉพาะ ticket ที่เสร็จสิ้นแล้วเท่านั้น');
       }
@@ -718,89 +632,62 @@ export class TicketService {
   // ===== HELPER METHODS =====
   private normalizeTicketNo(ticketIdentifier: string | number): string {
     let ticketNo = ticketIdentifier.toString().trim().toUpperCase();
-    
     if (!ticketNo.startsWith('T')) {
       ticketNo = 'T' + ticketNo;
     }
-    
     return ticketNo;
   }
 
-  async generateTicketNumber(): Promise<string> {
+  private async generateTicketNumber(): Promise<string> {
     const now = new Date();
     const year = now.getFullYear().toString().slice(-2);
     const month = (now.getMonth() + 1).toString().padStart(2, '0');
     const prefix = `T${year}${month}`;
 
-    let attempts = 0;
-    const maxAttempts = 10;
+    const latestTicket = await this.ticketRepo
+      .createQueryBuilder('t')
+      .where('t.ticket_no LIKE :prefix', { prefix: `${prefix}%` })
+      .orderBy('t.ticket_no', 'DESC')
+      .getOne();
 
-    while (attempts < maxAttempts) {
-      try {
-        const latestTicket = await this.ticketRepo
-          .createQueryBuilder('t')
-          .where('t.ticket_no LIKE :prefix', { prefix: `${prefix}%` })
-          .orderBy('t.ticket_no', 'DESC')
-          .getOne();
-
-        let running = 1;
-        if (latestTicket) {
-          const lastRunning = parseInt(latestTicket.ticket_no.slice(-5), 10);
-          running = lastRunning + 1;
-        }
-
-        const ticketNo = `${prefix}${running.toString().padStart(5, '0')}`;
-
-        const existingTicket = await this.ticketRepo.findOne({
-          where: { ticket_no: ticketNo }
-        });
-
-        if (!existingTicket) {
-          return ticketNo;
-        }
-
-        console.warn(`Duplicate ticket number detected: ${ticketNo}, retrying...`);
-        attempts++;
-        
-        await new Promise(resolve => setTimeout(resolve, 10 + Math.random() * 20));
-        
-      } catch (error) {
-        console.error('Error generating ticket number:', error);
-        attempts++;
-      }
+    let running = 1;
+    if (latestTicket) {
+      const lastRunning = parseInt(latestTicket.ticket_no.slice(-5), 10);
+      running = lastRunning + 1;
     }
 
-    const timestamp = Date.now().toString().slice(-5);
-    const fallbackTicketNo = `${prefix}${timestamp}`;
-    
-    console.warn(`Using fallback ticket number: ${fallbackTicketNo}`);
-    return fallbackTicketNo;
+    return `${prefix}${running.toString().padStart(5, '0')}`;
   }
 
   // ===== LEGACY METHODS =====
-  async checkTicketOwnership(userId: number, ticketId: number): Promise<any[]> {
-    try {
-      console.log(`🔍 Checking ownership: ticket ${ticketId}, user ${userId}`);
-      
-      if (!userId || !ticketId) {
-        console.log(`❌ Invalid parameters: userId=${userId}, ticketId=${ticketId}`);
-        return [];
-      }
+  async checkTicketOwnership(userId: number, ticketId: number) {
+    if (!userId || !ticketId) return;
 
-      const query = `
-        SELECT id, ticket_no, create_by, create_date
-        FROM ticket t
-        WHERE t.id = $1 AND t.create_by = $2 AND t.isenabled = true
-      `;
-      
-      const result = await this.dataSource.query(query, [ticketId, userId]);
-      console.log(`✅ Ownership check result: found ${result.length} records`);
-      
-      return result || [];
-    } catch (error) {
-      console.error('💥 Error checking ticket ownership:', error);
-      return [];
-    }
+    // แทนที่จะ return DB result ให้ publish event
+    const ownershipEvent = {
+      ticket_id: ticketId,
+      user_id: userId,
+      // สามารถใส่ข้อมูลอื่น ๆ ตามต้องการ
+    };
+
+    this.ticketClient.emit('ticket.ownership.checked', ownershipEvent);
+
+    console.log(`✅ Published ownership check event: ticket ${ticketId}, user ${userId}`);
+  }
+
+  async checkTicketOwnershipByNo(userId: number, ticket_no: number) {
+    if (!userId || !ticket_no) return;
+
+    // แทนที่จะ return DB result ให้ publish event
+    const ownershipEvent = {
+      ticket_id: ticket_no,
+      user_id: userId,
+      // สามารถใส่ข้อมูลอื่น ๆ ตามต้องการ
+    };
+
+    this.ticketClient.emit('ticket.ownership.by.ticketno.checked', ownershipEvent);
+
+    console.log(`✅ Published ownership check event: ticket ${ticket_no}, user ${userId}`);
   }
 
   async getAllTicket(userId: number) {

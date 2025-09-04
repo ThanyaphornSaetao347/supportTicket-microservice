@@ -8,33 +8,33 @@ import { UpdateMasterRoleDto } from './dto/update-master_role.dto';
 export class MasterRoleController {
   constructor(private readonly masterRoleService: MasterRoleService) {}
 
-  @MessagePattern('masterRole_create')
-  create(@Payload() message: { value: CreateMasterRoleDto }) {
-    return this.masterRoleService.create(message.value);
+  @MessagePattern('master-role-create')
+  async create(@Payload() dto: CreateMasterRoleDto) {
+    return await this.masterRoleService.create(dto);
   }
 
-  @MessagePattern('masterRole_findAll')
-  findAll() {
-    return this.masterRoleService.findAll();
+  @MessagePattern('master-role-find-all')
+  async findAll() {
+    return await this.masterRoleService.findAll();
   }
 
-  @MessagePattern('masterRole_findOne')
-  findOne(@Payload() message: { value: { id: number } }) {
-    return this.masterRoleService.findOne(message.value.id);
+  @MessagePattern('master-role-find-one')
+  async findOne(@Payload() id: number) {
+    return await this.masterRoleService.findOne(id);
   }
 
-  @MessagePattern('masterRole_findByName')
-  findByName(@Payload() message: { value: { name: string } }) {
-    return this.masterRoleService.findByName(message.value.name);
+  @MessagePattern('master-role-update')
+  async update(@Payload() data: { id: number; dto: UpdateMasterRoleDto }) {
+    return await this.masterRoleService.update(data.id, data.dto);
   }
 
-  @MessagePattern('masterRole_update')
-  update(@Payload() message: { value: { id: number; updateDto: UpdateMasterRoleDto } }) {
-    return this.masterRoleService.update(message.value.id, message.value.updateDto);
+  @MessagePattern('master-role-remove')
+  async remove(@Payload() id: number) {
+    return await this.masterRoleService.remove(id);
   }
 
-  @MessagePattern('masterRole_remove')
-  remove(@Payload() message: { value: { id: number } }) {
-    return this.masterRoleService.remove(message.value.id);
+  @MessagePattern('master-role-find-by-name')
+  async findByName(@Payload() roleName: string) {
+    return await this.masterRoleService.findByName(roleName);
   }
 }

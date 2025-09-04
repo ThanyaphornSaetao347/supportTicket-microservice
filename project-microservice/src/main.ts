@@ -4,12 +4,14 @@ import { ValidationPipe } from '@nestjs/common';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 
 async function bootstrap() {
+  const brokersEnv = process.env.KAFKA_BROKERS || 'kafka:29092';
+  const brokers = brokersEnv.split(',').map(broker => broker.trim());
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(AppModule, {
     transport: Transport.KAFKA,
     options: {
       client: {
         clientId: 'project-service',
-        brokers: ['localhost:9092'],
+        brokers: brokers,
       },
       consumer: {
         groupId: 'project-service-consumer',

@@ -1,25 +1,20 @@
-// เพิ่ม missing imports และ services
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { HttpModule } from '@nestjs/axios';
+import { KafkaModule } from './kafka/kafka.module';
+import { AuthModule } from './auth/auth.module';
 import { GatewayController } from './gateway.controller';
 import { GatewayService } from './gateway.service';
-import { UserService } from './user/user.service';
-import { AuthModule } from './auth/auth.module';
-import { KafkaModule } from './kafka/kafka.module';
 
-// เพิ่ม missing services
 @Module({
   imports: [
-    ConfigModule.forRoot({ 
+    ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
     }),
-    HttpModule,
-    AuthModule,
-    KafkaModule,
+    KafkaModule,           // global Kafka client registrations
+    AuthModule,            // auth
   ],
   controllers: [GatewayController],
-  providers: [GatewayService, UserService],
+  providers: [GatewayService],
 })
 export class AppModule {}

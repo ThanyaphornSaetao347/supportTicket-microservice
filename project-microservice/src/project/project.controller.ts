@@ -1,98 +1,117 @@
-import { Controller, Logger } from '@nestjs/common';
-import { MessagePattern, EventPattern, Payload } from '@nestjs/microservices';
+import { Controller, Inject, Logger } from '@nestjs/common';
+import { MessagePattern, EventPattern, Payload, ClientKafka } from '@nestjs/microservices';
 import { ProjectService } from './project.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Project } from './entities/project.entity';
+import { Repository } from 'typeorm';
+import { KafkaService } from '..//libs/common/kafka/kafka.service';
+import { KafkaContext, Ctx } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs'; // ✅ เพิ่ม import นี้
 
 @Controller('api')
 export class ProjectController {
-  private readonly logger = new Logger(ProjectController.name);
 
-  constructor(private readonly projectService: ProjectService) {}
+  constructor(
+    private readonly projectService: ProjectService,
+    @InjectRepository(Project)
+    private readonly projecetRepo: Repository<Project>,
+    private readonly kafkaService: KafkaService,
 
-  // Kafka Message Patterns - สำหรับ RPC calls
-  @MessagePattern('projects')
-  async handleCreateProject(@Payload() data: { createProjectDto: CreateProjectDto; userId: number }) {
-    this.logger.log(`Received project create request for user: ${data.userId}`);
-    return this.projectService.createProject(data.createProjectDto, data.userId);
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
+  ) {}
+
+  @MessagePattern('project.findByIds')
+  async findByIds(@Payload() data: { ids: number[] }) {
+    return this.projecetRepo.findByIds(data.ids);
   }
 
-  @MessagePattern('project/all')
-  async handleFindAll(@Payload() data: any) {
-    this.logger.log('Received find all projects request');
-    return this.projectService.getAllProjects();
+  @MessagePattern('project_get_ddl')
+  async handleGetProjectDDL(@Payload() payload: any) {
+    const { userId } = payload;
+
+    // Call user-microservice to get actual user_id
+    // ✅ เปลี่ยน .toPromise() เป็น firstValueFrom()
+    const actualUser = await firstValueFrom(
+        this.userClient.send('user-find-one', { id: userId })
+    );
+
+    if (!actualUser) {
+      return [];
+    }
+
+    return this.projectService.getDDLByUser(actualUser.user_id);
   }
 
-  @MessagePattern('project/:id')
-  async handleFindOne(@Payload() data: { id: number }) {
-    this.logger.log(`Received find project request for ID: ${data.id}`);
-    return this.projectService.getProjectById(data.id);
+  @MessagePattern('project-requests')
+  async handleProjectRequests(@Payload() message: any, @Ctx() context: KafkaContext) {
+    try {
+      const { action, correlationId, responseTopic, ...data } = message.value;
+      let result;
+
+      switch (action) {
+        case 'getById':
+          result = await this.projectService.getProjectById(data.projectId);
+          break;
+        case 'getByUserId':
+          result = await this.projectService.getProjectsByUserId(data.userId);
+          break;
+        case 'validateAccess':
+          result = await this.projectService.validateUserProjectAccess(data.userId, data.projectId);
+          break;
+        default:
+          throw new Error(`Unknown action: ${action}`);
+      }
+
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: result.success,
+          data: result.data,
+          message: result.message
+        });
+      }
+
+      return result;
+    } catch (error) {
+      const { correlationId, responseTopic } = message.value;
+      
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: false,
+          message: error.message
+        });
+      }
+
+      return { success: false, message: error.message };
+    }
   }
 
-  @MessagePattern('getProjectDDL')
-  async handleFindByUser(@Payload() data: { userId: number }) {
-    this.logger.log(`Received find projects by user request for user: ${data.userId}`);
-    return this.projectService.getProjectsForUser(data.userId);
-  }
-
-  @MessagePattern('project.update')
-  async handleUpdate(@Payload() data: { id: number; updateProjectDto: UpdateProjectDto; userId: number }) {
-    this.logger.log(`Received update project request for ID: ${data.id}`);
-    return this.projectService.updateProject(data.id, data.updateProjectDto, data.userId);
-  }
-
-  @MessagePattern('project.delete')
-  async handleDelete(@Payload() data: { id: number; userId: number }) {
-    this.logger.log(`Received delete project request for ID: ${data.id}`);
-    return this.projectService.removeProject(data.id, data.userId);
-  }
-
-  @MessagePattern('project.assign_customer')
-  async handleAssignCustomer(@Payload() data: { projectId: number; customerId: number; userId: number }) {
-    this.logger.log(`Received assign customer request: project ${data.projectId}, customer ${data.customerId}`);
-    return this.projectService.assignCustomerToProject(data.projectId, data.customerId, data.userId);
-  }
-
-  @MessagePattern('project.unassign_customer')
-  async handleUnassignCustomer(@Payload() data: { projectId: number; customerId: number; userId: number }) {
-    this.logger.log(`Received unassign customer request: project ${data.projectId}, customer ${data.customerId}`);
-    return this.projectService.unassignCustomerFromProject(data.projectId, data.customerId, data.userId);
-  }
-
-  @MessagePattern('project.get_customers')
-  async handleGetCustomers(@Payload() data: { projectId: number }) {
-    this.logger.log(`Received get customers request for project: ${data.projectId}`);
-    return this.projectService.getProjectCustomers(data.projectId);
-  }
-
-  @MessagePattern('project.search')
-  async handleSearch(@Payload() data: { query: string; userId?: number }) {
-    this.logger.log(`Received search projects request: ${data.query}`);
-    return this.projectService.searchProjects(data.query, data.userId);
-  }
-
-  @MessagePattern('project.get_statistics')
-  async handleGetStatistics(@Payload() data: { userId?: number }) {
-    this.logger.log('Received get project statistics request');
-    return this.projectService.getProjectStatistics(data.userId);
-  }
-
-  // Kafka Event Patterns - สำหรับ Event-driven
-  @EventPattern('user.created')
-  async handleUserCreated(@Payload() data: any) {
-    this.logger.log(`User created event received: ${JSON.stringify(data)}`);
-    // อาจจะสร้าง default project หรือ setup อื่นๆ
-  }
-
-  @EventPattern('customer.created')
-  async handleCustomerCreated(@Payload() data: any) {
-    this.logger.log(`Customer created event received: ${JSON.stringify(data)}`);
-    // อาจจะมี logic เพิ่มเติมเมื่อมี customer ใหม่
-  }
-
-  @EventPattern('ticket.created')
-  async handleTicketCreated(@Payload() data: any) {
-    this.logger.log(`Ticket created event received: ${JSON.stringify(data)}`);
-    // อาจจะอัพเดท project statistics หรือ tracking
+  @MessagePattern('ticket-events')
+  async handleTicketEvents(@Payload() message: any) {
+    try {
+      const { event, data } = message.value;
+      
+      switch (event) {
+        case 'ticket.created':
+          console.log('🏗️ Project service received ticket.created event:', data);
+          // Handle ticket created event - maybe update project statistics
+          break;
+        case 'ticket.updated':
+          console.log('🏗️ Project service received ticket.updated event:', data);
+          // Handle ticket updated event
+          break;
+        case 'ticket.status.changed':
+          console.log('🏗️ Project service received ticket.status.changed event:', data);
+          // Handle status change - maybe update project progress
+          break;
+        default:
+          console.log('🏗️ Unknown event received:', event);
+      }
+    } catch (error) {
+      console.error('Error handling ticket event:', error);
+    }
   }
 }

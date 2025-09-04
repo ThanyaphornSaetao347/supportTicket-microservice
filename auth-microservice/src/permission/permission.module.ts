@@ -15,7 +15,7 @@ import { PermissionGuard } from './permission.guard';
           options: {
             client: {
               clientId: 'auth-permission-service',
-              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+              brokers: [configService.get('KAFKA_BROKERS', 'kafka:29092')],
             },
             consumer: {
               groupId: 'auth-permission-consumer',

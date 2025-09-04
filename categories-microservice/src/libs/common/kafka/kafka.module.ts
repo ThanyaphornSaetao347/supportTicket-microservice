@@ -9,21 +9,26 @@ import { KafkaService } from './kafka.service';
     ClientsModule.registerAsync([
       {
         name: 'CATEGORIES_SERVICE',
-        useFactory: (configService: ConfigService) => ({
-          transport: Transport.KAFKA,
-          options: {
-            client: {
-              clientId: 'categories-service',
-              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+        useFactory: (configService: ConfigService) => {
+          const brokers = configService.get<string>('KAFKA_BROKERS') || 'kafka:29092';
+          const brokersArray = brokers.split(',').map(broker => broker.trim());
+          console.log('Kafka brokers used:', brokersArray);
+          return {
+            transport: Transport.KAFKA,
+            options: {
+              client: {
+                clientId: 'categories-service',
+                brokers: brokersArray,
+              },
+              consumer: {
+                groupId: 'categories-service-consumer'
+              },
+              producer: {
+                allowAutoTopicCreation: true,
+              },
             },
-            consumer: {
-              groupId: 'categories-service-consumer'
-            },
-            producer: {
-              allowAutoTopicCreation: true,
-            },
-          },
-        }),
+          }
+        },
         inject: [ConfigService],
       },
     ]),

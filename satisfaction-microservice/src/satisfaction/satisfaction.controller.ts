@@ -3,6 +3,8 @@ import { MessagePattern, EventPattern, Payload } from '@nestjs/microservices';
 import { SatisfactionService } from './satisfaction.service';
 import { CreateSatisfactionDto } from './dto/create-satisfaction.dto';
 import { UpdateSatisfactionDto } from './dto/update-satisfaction.dto';
+import { KafkaService } from '../libs/common/kafka/kafka.service';
+import { KafkaContext, Ctx } from '@nestjs/microservices';
 
 @Controller()
 export class SatisfactionController {
@@ -10,7 +12,79 @@ export class SatisfactionController {
 
   constructor(
     private readonly satisfactionService: SatisfactionService,
+    private readonly kafkaService: KafkaService,
   ) {}
+
+  @MessagePattern('satisfaction-requests')
+  async handleSatisfactionRequests(@Payload() message: any, @Ctx() context: KafkaContext) {
+    try {
+      const { action, correlationId, responseTopic, ...data } = message.value;
+      let result;
+
+      switch (action) {
+        case 'create':
+          result = await this.satisfactionService.createSatisfaction(data.data);
+          break;
+        case 'getByTicket':
+          result = await this.satisfactionService.getSatisfactionByTicket(data.ticketId);
+          break;
+        case 'getStatistics':
+          result = await this.satisfactionService.getSatisfactionStatistics(data.filters);
+          break;
+        default:
+          throw new Error(`Unknown action: ${action}`);
+      }
+
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: result.success,
+          data: result.data,
+          message: result.message
+        });
+      }
+
+      return result;
+    } catch (error) {
+      const { correlationId, responseTopic } = message.value;
+      
+      if (correlationId && responseTopic) {
+        await this.kafkaService.sendResponse(responseTopic, {
+          correlationId,
+          success: false,
+          message: error.message
+        });
+      }
+
+      return { success: false, message: error.message };
+    }
+  }
+
+  @MessagePattern('ticket-events')
+  async handleTicketEvents(@Payload() message: any) {
+    try {
+      const { event, data } = message.value;
+      
+      switch (event) {
+        case 'ticket.created':
+          console.log('😊 Satisfaction service received ticket.created event:', data);
+          // Maybe initialize satisfaction tracking for new ticket
+          break;
+        case 'ticket.status.changed':
+          console.log('😊 Satisfaction service received ticket.status.changed event:', data);
+          // If ticket is closed, maybe send satisfaction survey
+          if (data.newStatus === 5) { // Status 5 = Closed
+            console.log('✅ Ticket closed, satisfaction survey can be sent');
+            // Logic to trigger satisfaction survey
+          }
+          break;
+        default:
+          console.log('😊 Unknown event received:', event);
+      }
+    } catch (error) {
+      console.error('Error handling ticket event:', error);
+    }
+  }
 
   // Kafka Message Patterns - สำหรับ RPC calls
   @MessagePattern('satisfaction.create')

@@ -2,7 +2,7 @@ import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { ClientKafka } from '@nestjs/microservices';
-import { lastValueFrom, timeout } from 'rxjs';
+import { lastValueFrom, timeout, firstValueFrom } from 'rxjs';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
 import * as bcrypt from 'bcrypt';
 
@@ -28,82 +28,57 @@ export class AuthService {
     private configService: ConfigService,
     private kafkaService: KafkaService,
     @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
-  ) {}
-
-  async onModuleInit() {
-    // Subscribe to responses from user service for various patterns
-    this.userClient.subscribeToResponseOf('user_find_by_username');
-    this.userClient.subscribeToResponseOf('user_find_by_id');
-    this.userClient.subscribeToResponseOf('user_create');
-    this.userClient.subscribeToResponseOf('user_get_permissions');
-    
-    await this.userClient.connect();
-  }
+  ) { }
 
   // Register user flow
-  async register(dto: { username: string; password: string; email: string; firstname: string; lastname: string; phone: string }) {
-    try {
-      const existingUser = await this.findUserByUsername(dto.username);
-      if (existingUser) {
-        return {
-          code: 0,
-          status: false,
-          message: 'Username already exists',
-        };
-      }
-
-      const hashedPassword = await bcrypt.hash(dto.password, 10);
-
-      const createUserResponse = await lastValueFrom(
-        this.userClient.send('user_create', {
-          value: {
-            createUserDto: {
-              ...dto,
-              password: hashedPassword,
-              create_by: 1, // system user id
-              update_by: 1,
-              isenabled: true,
-            },
-            userId: 1,
-          }
-        }).pipe(timeout(5000))
-      );
-
-      if (createUserResponse.code === '1') {
-        await this.kafkaService.emitUserRegistered({
-          userId: createUserResponse.data.id,
-          username: createUserResponse.data.username,
-          email: createUserResponse.data.email,
-          registrationMethod: 'direct',
-          timestamp: new Date(),
-        });
-
-        return {
-          code: 1,
-          status: true,
-          message: 'User registered successfully',
-          data: {
-            id: createUserResponse.data.id,
-            username: createUserResponse.data.username,
-            email: createUserResponse.data.email,
-          }
-        };
-      } else {
-        return {
-          code: 0,
-          status: false,
-          message: createUserResponse.message || 'Registration failed',
-        };
-      }
-    } catch (error) {
-      console.error('Registration error:', error);
-      return {
-        code: 0,
-        status: false,
-        message: 'Registration failed',
-        error: error.message,
-      };
+  async register(dto: { username: string; password: string }) {
+    // validate username/password format
+    if (!dto.username || !dto.password) {
+      return { code: 0, status: false, message: 'Invalid input' };
     }
+
+    // hash password
+    const hashed = await bcrypt.hash(dto.password, 10);
+
+    // return hashed password ให้ controller publish ไป User microservice
+    return {
+      username: dto.username,
+      password: hashed,
+    };
+  }
+
+  // auth.service.ts
+
+  async login(username: string, password: string) {
+    // 1. ส่ง username ไปขอข้อมูล user (ที่มี hashed password) จาก USER_SERVICE
+    const user = await this.findUserByUsername(username); // ใช้ helper function ที่มีอยู่แล้ว
+
+    if (!user || !user.password) {
+      return { code: 0, status: false, message: 'Invalid credentials', access_token: null };
+    }
+
+    // 2. ใช้ bcrypt.compare ที่ AuthService เพื่อเปรียบเทียบรหัสผ่าน
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      return { code: 0, status: false, message: 'Invalid credentials', access_token: null };
+    }
+
+    // 3. ถ้าถูกต้อง ก็สร้าง Token ต่อไป...
+    const { password: _, ...userPayload } = user; // เอา password ออกจาก object ก่อนสร้าง payload
+    const payload = { username: userPayload.username, sub: userPayload.id };
+    const accessToken = this.jwtService.sign(payload);
+
+    // ... a lot of code ...
+
+    return {
+      code: 1,
+      status: true,
+      message: 'Login successful',
+      user: { id: user.id, username: user.username },
+      access_token: accessToken,
+      // ... a lot of code ...
+    };
   }
 
   // Validate user credentials during login
@@ -142,56 +117,12 @@ export class AuthService {
     }
   }
 
-  // Create JWT token after successful login
-  async login(user: any): Promise<AuthResponse> {
-    if (!user || !user.id || !user.username) {
-      return {
-        code: 0,
-        status: false,
-        message: 'Invalid user data',
-        user: null,
-        access_token: null,
-      };
-    }
-
-    const payload = { username: user.username, sub: user.id };
-    const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN') || '3h';
-    const accessToken = this.jwtService.sign(payload);
-
-    const expiresInSeconds = this.parseExpiresIn(expiresIn);
-    const now = Math.floor(Date.now() / 1000);
-    const expiresTimestamp = now + expiresInSeconds;
-
-    const permissions = await this.getUserPermissions(user.id);
-
-    await this.kafkaService.emitUserLoggedIn({
-      userId: user.id,
-      username: user.username,
-      loginTimestamp: new Date(),
-      tokenExpiresAt: new Date(expiresTimestamp * 1000),
-      permissionsCount: permissions.length,
-      ip: 'unknown',
-    });
-
-    return {
-      code: 1,
-      status: true,
-      message: 'Login successful',
-      user: { id: user.id, username: user.username },
-      access_token: accessToken,
-      expires_in: expiresIn,
-      expires_at: new Date(expiresTimestamp * 1000).toISOString(),
-      token_expires_timestamp: expiresTimestamp,
-      permission: permissions,
-    };
-  }
-
   // Validate JWT token and get user info
   async validateToken(token: string) {
     try {
       const decoded = this.jwtService.verify(token);
       const user = await this.findUserById(decoded.sub);
-      
+
       if (!user) {
         await this.kafkaService.emitTokenValidationFailed({
           userId: decoded.sub,

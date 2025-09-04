@@ -1,28 +1,29 @@
-// src/auth/auth.module.ts
 import { Module } from '@nestjs/common';
+import { AuthController } from './auth.controller';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
+import { JwtStrategy } from './jwt.strategy';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { HttpModule } from '@nestjs/axios';
-import { JwtStrategy } from './strategies/jwt.strategy';
-import { AuthService } from './auth.service';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
-    PassportModule,
-    HttpModule,
+    PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET'),
+      useFactory: async (config: ConfigService) => ({
+        secret: config.get<string>('JWT_SECRET'),
         signOptions: {
-          expiresIn: configService.get<string>('JWT_EXPIRES_IN', '3h'),
+          expiresIn: config.get<string>('JWT_EXPIRES_IN') || '3h',
         },
       }),
       inject: [ConfigService],
     }),
+    ConfigModule,
+    UsersModule, // Kafka-based UserModule
   ],
-  providers: [AuthService, JwtStrategy],
-  exports: [AuthService, JwtModule],
+  controllers: [AuthController],
+  providers: [JwtStrategy],
+  exports: [JwtModule],
 })
 export class AuthModule {}

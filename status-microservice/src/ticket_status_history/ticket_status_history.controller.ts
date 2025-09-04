@@ -9,7 +9,7 @@ export class TicketStatusHistoryController {
   constructor(private readonly historyService: TicketStatusHistoryService) {}
 
   // ✅ รับคำขอสร้าง history entry ใหม่
-  @MessagePattern('history/:ticketId')
+  @MessagePattern('history_ticket_id')
   async createHistory(@Payload() data: {
     ticket_id: number;
     status_id: number;
@@ -50,7 +50,7 @@ export class TicketStatusHistoryController {
   }
 
   // ✅ รับคำขอดึง current status ของ ticket
-  @MessagePattern('ticket/:ticketId/current-status')
+  @MessagePattern('ticket-ticket-id-current-status')
   async getCurrentStatus(@Payload() data: { ticket_id: number }) {
     try {
       this.logger.log(`📥 Received history.current_status.get for ticket ${data.ticket_id}`);

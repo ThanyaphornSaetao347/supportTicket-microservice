@@ -1,6 +1,7 @@
 import { Module, Global } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ConfigService } from '@nestjs/config';
+import { KafkaService } from './kafka.service';
 
 @Global()
 @Module({
@@ -8,25 +9,71 @@ import { ConfigService } from '@nestjs/config';
     ClientsModule.registerAsync([
       {
         name: 'CUSTOMER_SERVICE',
-        useFactory: (configService: ConfigService) => ({
-          transport: Transport.KAFKA,
-          options: {
-            client: {
-              clientId: 'customer-service',
-              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+        useFactory: (configService: ConfigService) => {
+          const brokers = configService.get<string>('KAFKA_BROKERS') || 'kafka:29092';
+          const brokersArray = brokers.split(',').map(broker => broker.trim());
+          console.log('Kafka brokers used:', brokersArray);
+          return {
+            transport: Transport.KAFKA,
+            options: {
+              client: {
+                clientId: 'customer-service',
+                brokers: brokersArray,
+              },
+              consumer: {
+                groupId: 'customer-service-consumer', // ตั้ง groupId สำหรับ consumer
+              },
+              producer: {
+                allowAutoTopicCreation: true,
+              },
             },
-            consumer: {
-              groupId: 'customer-service-consumer', // ตั้ง groupId สำหรับ consumer
+          };
+        },
+        inject: [ConfigService],
+      },
+      {
+        name: 'PROJECT_SERVICE',
+        useFactory: (configService: ConfigService) => {
+          const brokers = configService.get<string>('KAFKA_BROKERS') || 'kafka:29092';
+          const brokersArray = brokers.split(',').map(broker => broker.trim());
+          return { 
+            transport: Transport.KAFKA,
+            options: {
+              client: {
+                clientId: 'customer-to-project',
+                brokers: brokersArray,
+              },
+              consumer: {
+                groupId: 'customer-project-consumer',
+              },
             },
-            producer: {
-              allowAutoTopicCreation: true,
+          };
+        },
+        inject: [ConfigService],
+      },
+      {
+        name: 'USER_SERVICE',
+        useFactory: (configService: ConfigService) => {
+          const brokers = configService.get<string>('KAFKA_BROKERS') || 'kafka:29092';
+          const brokersArray = brokers.split(',').map(broker => broker.trim());
+          return {
+            transport: Transport.KAFKA,
+            options: {
+              client: {
+                clientId: 'customer-to-user',
+                brokers: brokersArray,
+              },
+              consumer: {
+                groupId: 'customer-user-consumer',
+              },
             },
-          },
-        }),
+          };
+        },
         inject: [ConfigService],
       },
     ]),
   ],
-  exports: [ClientsModule],
+  providers: [KafkaService],
+  exports: [ClientsModule, KafkaService],
 })
 export class KafkaModule {}

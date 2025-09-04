@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like } from 'typeorm';
+import { Repository, Like, In } from 'typeorm';
 import { Project } from './entities/project.entity';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
@@ -127,6 +127,12 @@ export class ProjectService implements OnModuleInit {
     }
   }
 
+  async getDDLByUser(id: number) {
+    return this.projectRepo.find({
+      where: { id: In([id]) },
+    });
+  }
+
   // ✅ ดึง Projects ของ User
   async getProjectsForUser(userId: number) {
     try {
@@ -210,52 +216,71 @@ export class ProjectService implements OnModuleInit {
     }
   }
 
-  // ✅ ดึง Project ตาม ID
-  async getProjectById(id: number) {
+  async getProjectById(projectId: number) {
     try {
-      // Validate input
-      if (!id || id <= 0) {
-        return { success: false, message: 'Invalid project ID' };
-      }
-
-      const project = await this.projectRepo.findOne({ 
-        where: { id, isenabled: true } 
+      const project = await this.projectRepo.findOne({
+        where: { id: projectId, isenabled: true }
       });
 
       if (!project) {
-        return {
-          success: false,
-          message: 'ไม่พบโปรเจคที่ระบุ',
-        };
+        throw new Error(`Project with id ${projectId} not found`);
       }
-
-      // Get customer assignments from Customer Service
-      const assignmentsResponse = await lastValueFrom(
-        this.customerClient.send('customer.find_by_project', { projectId: id }).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling customer service:', error);
-            return of({ success: true, data: [] });
-          })
-        )
-      );
-
-      const assignments = assignmentsResponse.success ? assignmentsResponse.data : [];
 
       return {
         success: true,
-        message: 'Success',
-        data: { 
-          ...project, 
-          assignments,
-          customerCount: assignments.length,
-        },
+        data: project
       };
     } catch (error) {
-      this.logger.error('❌ Error getting project by ID:', error.message);
       return {
         success: false,
-        message: error.message,
+        message: error.message
+      };
+    }
+  }
+
+  async getProjectsByUserId(userId: number) {
+    try {
+      // Query projects that user has access to
+      const projects = await this.projectRepo
+        .createQueryBuilder('p')
+        .innerJoin('customer_for_project', 'cp', 'cp.project_id = p.id')
+        .select(['p.id', 'p.name', 'p.description'])
+        .where('cp.user_id = :userId', { userId })
+        .andWhere('cp.isenabled = true')
+        .andWhere('p.isenabled = true')
+        .getMany();
+
+      return {
+        success: true,
+        data: projects
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
+      };
+    }
+  }
+
+  async validateUserProjectAccess(userId: number, projectId: number) {
+    try {
+      const access = await this.projectRepo
+        .createQueryBuilder('p')
+        .innerJoin('customer_for_project', 'cp', 'cp.project_id = p.id')
+        .where('cp.user_id = :userId', { userId })
+        .andWhere('p.id = :projectId', { projectId })
+        .andWhere('cp.isenabled = true')
+        .andWhere('p.isenabled = true')
+        .getOne();
+
+      return {
+        success: true,
+        data: { hasAccess: !!access }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message
       };
     }
   }

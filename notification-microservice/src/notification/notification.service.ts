@@ -7,9 +7,35 @@ import { Notification, NotificationType } from './entities/notification.entity';
 import { MailerService } from '@nestjs-modules/mailer';
 import { KafkaService } from '../libs/common/kafka/kafka.service';
 import { ClientKafka } from '@nestjs/microservices';
-import { lastValueFrom, timeout, catchError, of } from 'rxjs';
+import { lastValueFrom, timeout, catchError, of } from 'rxjs'; // ✅ แก้ไขตรงนี้
 
-// สร้าง Simplified Entities สำหรับ Notification Service
+// Interface สำหรับข้อมูลที่ได้รับจาก microservices อื่น
+interface TicketData {
+  id: number;
+  ticket_no: string;
+  categories_id?: string;
+  issue_description?: string;
+  create_by: number;
+  create_date?: Date;
+}
+
+interface UserData {
+  id: number;
+  email: string;
+  username?: string;
+  create_by?: string;
+}
+
+interface StatusData {
+  id: number;
+  name: string;
+}
+
+interface SupporterRole {
+  user_id: number;
+  role_id: number;
+}
+
 @Injectable()
 export class NotificationService implements OnModuleInit {
   private readonly logger = new Logger(NotificationService.name);
@@ -17,330 +43,276 @@ export class NotificationService implements OnModuleInit {
   constructor(
     @InjectRepository(Notification)
     private readonly notiRepo: Repository<Notification>,
-    @Inject('TICKET_SERVICE') private readonly ticketClient: ClientKafka,
-    @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
-    @Inject('AUTH_SERVICE') private readonly authClient: ClientKafka,
     private readonly mailerService: MailerService,
     private readonly kafkaService: KafkaService,
+    @Inject('TICKET_SERVICE') private readonly ticketClient: ClientKafka,
+    @Inject('USER_SERVICE') private readonly userClient: ClientKafka,
+    @Inject('STATUS_SERVICE') private readonly statusClient: ClientKafka,
+    @Inject('SUPPORTER_SERVICE') private readonly supporterClient: ClientKafka,
   ) {}
 
   async onModuleInit() {
-    // Subscribe to response patterns ที่เราจะใช้
-    this.ticketClient.subscribeToResponseOf('ticket.find_by_no');
-    this.ticketClient.subscribeToResponseOf('ticket.find_one');
-    this.userClient.subscribeToResponseOf('user.find_one');
-    this.userClient.subscribeToResponseOf('user.get_supporters');
-    this.authClient.subscribeToResponseOf('auth.validate_token');
-    
+    // กำหนด topic ที่จะรอรับ response จาก microservices อื่นๆ
+    this.ticketClient.subscribeToResponseOf('ticket_find_one');
+    this.userClient.subscribeToResponseOf('user_find_by_ids');
+    this.userClient.subscribeToResponseOf('user_find_one');
+    this.statusClient.subscribeToResponseOf('status_find_one');
+    this.supporterClient.subscribeToResponseOf('supporter_get_users_by_role_id');
+
+    // ต้องเรียก connect() เพื่อเชื่อมต่อกับ Kafka broker
     await this.ticketClient.connect();
     await this.userClient.connect();
-    await this.authClient.connect();
-    
-    this.logger.log('All service clients connected');
+    await this.statusClient.connect();
+    await this.supporterClient.connect();
+  }
+
+  // ============== เพิ่มเมธอดที่ขาดหายไปเพื่อจัดการ Event จาก Kafka ==============
+  async handleTicketCreatedEvent(data: any) {
+    this.logger.log(`Handling ticket.created event in service: ${JSON.stringify(data)}`);
+    // TODO: Implement business logic for a newly created ticket, e.g., create a notification.
+  }
+
+  async handleTicketUpdatedEvent(data: any) {
+    this.logger.log(`Handling ticket.updated event in service: ${JSON.stringify(data)}`);
+    // TODO: Implement business logic for a ticket update.
+  }
+
+  async handleTicketAssignedEvent(data: any) {
+    this.logger.log(`Handling ticket.assigned event in service: ${JSON.stringify(data)}`);
+    // TODO: Implement business logic when a ticket is assigned.
+  }
+
+  async handleUserCreatedEvent(data: any) {
+    this.logger.log(`Handling user.created event in service: ${JSON.stringify(data)}`);
+    // TODO: Implement business logic for a new user, e.g., send a welcome email.
   }
 
   // ✅ สร้างการแจ้งเตือนสำหรับการเปลี่ยนแปลงสถานะ (สำหรับผู้แจ้ง)
   async createStatusChangeNotification(ticketNo: string, statusId: number) {
     try {
-      // Validate input
-      if (!ticketNo || !statusId) {
-        throw new Error('ticketNo และ statusId จำเป็น');
-      }
-
-      // Get ticket info from Ticket Service
-      const ticketResponse = await lastValueFrom(
-        this.ticketClient.send('ticket.find_by_no', { ticketNo }).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling ticket service:', error);
-            return of({ success: false, message: 'ไม่สามารถเชื่อมต่อ ticket service ได้' });
-          })
-        )
+      // ดึงข้อมูล ticket จาก ticket-microservice
+      const ticket: TicketData = await lastValueFrom(
+        this.ticketClient.send('ticket.find_by_no', { ticket_no: ticketNo })
+          .pipe(
+            timeout(5000),
+            catchError(err => {
+              this.logger.error('Error fetching ticket:', err);
+              return of(null);
+            })
+          )
       );
 
-      if (!ticketResponse.success || !ticketResponse.data) {
-        throw new NotFoundException(`ไม่พบ ticket หมายเลข ${ticketNo}`);
+      if (!ticket) {
+        throw new NotFoundException(`Ticket with ticket_no ${ticketNo} not found`);
       }
 
-      const ticket = ticketResponse.data;
-
-      // Get user info from User Service
-      const userResponse = await lastValueFrom(
-        this.userClient.send('user.find_one', { id: ticket.create_by }).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling user service:', error);
-            return of({ success: false });
-          })
-        )
+      // ดึงข้อมูล status จาก status-microservice
+      const status: StatusData = await lastValueFrom(
+        this.statusClient.send('status.get_with_language', { statusId, languageId: 1 })
+          .pipe(
+            timeout(5000),
+            catchError(err => {
+              this.logger.error('Error fetching status:', err);
+              return of(null);
+            })
+          )
       );
 
-      if (!userResponse.success) {
-        this.logger.warn(`User not found for ticket creator: ${ticket.create_by}`);
-        return { success: false, message: 'ไม่พบข้อมูลผู้ใช้' };
+      if (!status) {
+        throw new NotFoundException(`Status with ID ${statusId} not found`);
       }
 
-      // Get status info from Ticket Service
-      const statusResponse = await lastValueFrom(
-        this.ticketClient.send('ticket.get_status', { id: statusId }).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling status service:', error);
-            return of({ success: false });
-          })
-        )
+      // ดึงข้อมูล user จาก user-microservice
+      const user: UserData = await lastValueFrom(
+        this.userClient.send('user.find_one', { userId: ticket.create_by })
+          .pipe(
+            timeout(5000),
+            catchError(err => {
+              this.logger.error('Error fetching user:', err);
+              return of(null);
+            })
+          )
       );
 
-      const statusName = statusResponse.success ? statusResponse.data?.name : 'ไม่ระบุ';
-
-      // ✅ สร้าง notification
+      // สร้าง notification
       const notification = this.notiRepo.create({
         ticket_no: ticketNo,
         user_id: ticket.create_by,
         status_id: statusId,
         notification_type: NotificationType.STATUS_CHANGE,
-        title: `อัพเดทสถานะ: #${ticket.ticket_no}`,
-        message: `เรื่องของคุณได้รับการอัพเดทสถานะเป็น: ${statusName}`,
+        title: `อัพเดทสถานะ: #${ticket.id}`,
+        message: `เรื่องของคุณได้รับการอัพเดทสถานะเป็น: ${status?.name || 'ไม่ระบุ'}`,
         is_read: false,
-        email_sent: false,
-        create_date: new Date(),
+        email_sent: false
       });
 
       const savedNotification = await this.notiRepo.save(notification);
 
-      // ส่ง email
-      await this.sendEmailNotification(savedNotification, userResponse.data, ticket);
+      // ส่ง email หากมี user data
+      if (user?.email) {
+        await this.sendEmailNotification(savedNotification, user, ticket, status);
+      }
 
       // Emit event
       await this.kafkaService.emitNotificationCreated({
         notificationId: savedNotification.id,
+        type: NotificationType.STATUS_CHANGE,
         ticketNo,
         userId: ticket.create_by,
-        type: NotificationType.STATUS_CHANGE,
-        timestamp: new Date(),
+        timestamp: new Date()
       });
 
       this.logger.log(`✅ Status change notification created for ticket ${ticketNo}`);
-
-      return {
-        success: true,
-        data: savedNotification,
-      };
+      return savedNotification;
     } catch (error) {
-      this.logger.error('❌ Error creating status change notification:', error.message);
-      return {
-        success: false,
-        message: error.message,
-      };
+      this.logger.error('Error creating status change notification:', error);
+      throw error;
     }
   }
 
   // ✅ สร้างการแจ้งเตือนเรื่องใหม่ (สำหรับ supporter)
   async createNewTicketNotification(ticketNo: string) {
     try {
-      // Validate input
-      if (!ticketNo) {
-        throw new Error('ticketNo จำเป็น');
-      }
-
-      // Get ticket info
-      const ticketResponse = await lastValueFrom(
-        this.ticketClient.send('ticket.find_by_no', { ticketNo }).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling ticket service:', error);
-            return of({ success: false, message: 'ไม่สามารถเชื่อมต่อ ticket service ได้' });
-          })
-        )
+      // ดึงข้อมูล ticket
+      const ticket: TicketData = await lastValueFrom(
+        this.ticketClient.send('ticket.find_by_no', { ticket_no: ticketNo })
+          .pipe(timeout(5000))
       );
 
-      if (!ticketResponse.success || !ticketResponse.data) {
-        throw new NotFoundException(`ไม่พบ ticket หมายเลข ${ticketNo}`);
+      if (!ticket) {
+        throw new NotFoundException(`Ticket with ticket_no ${ticketNo} not found`);
       }
 
-      const ticket = ticketResponse.data;
-
-      // Get supporters from User Service
-      const supportersResponse = await lastValueFrom(
-        this.userClient.send('user.get_supporters', {}).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling user service for supporters:', error);
-            return of({ success: false, data: [] });
-          })
-        )
+      // ดึงรายการ supporters จาก user-microservice
+      const supporterRoleIds = [5, 6, 7, 8, 9, 10, 13];
+      const supporterUserIds: number[] = await lastValueFrom(
+        this.userClient.send('user.get_supporters', { roleIds: supporterRoleIds })
+          .pipe(
+            timeout(5000),
+            catchError(err => {
+              this.logger.error('Error fetching supporters:', err);
+              return of([]);
+            })
+          )
       );
 
-      const supporters = supportersResponse.success ? supportersResponse.data : [];
-
-      if (supporters.length === 0) {
+      if (supporterUserIds.length === 0) {
         this.logger.warn('No supporters found for notification');
-        return { success: false, message: 'ไม่พบ supporters' };
+        return [];
       }
 
       const notifications: Notification[] = [];
 
-      for (const supporter of supporters) {
-        // Check if notification already exists
-        const existing = await this.notiRepo.findOne({
-          where: {
-            ticket_no: ticketNo,
-            user_id: supporter.id,
-            notification_type: NotificationType.NEW_TICKET,
-          },
-        });
-
-        if (existing) {
-          this.logger.log(`Notification already exists for supporter ${supporter.id}`);
-          continue;
-        }
-
+      // สร้าง notification สำหรับ supporter แต่ละคน
+      for (const userId of supporterUserIds) {
         const notification = this.notiRepo.create({
           ticket_no: ticketNo,
-          user_id: supporter.id,
+          user_id: userId,
           notification_type: NotificationType.NEW_TICKET,
-          title: `เรื่องใหม่: #${ticket.ticket_no}`,
-          message: `มีเรื่องใหม่ที่ต้องการการดำเนินการ - ${ticket.issue_description || 'ไม่มีหัวข้อ'}`,
+          title: `เรื่องใหม่: #${ticket.id}`,
+          message: `มีเรื่องใหม่ที่ต้องการการดำเนินการ - ${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}`,
           is_read: false,
-          email_sent: false,
-          create_date: new Date(),
+          email_sent: false
         });
 
         const savedNotification = await this.notiRepo.save(notification);
         notifications.push(savedNotification);
 
-        // ส่ง email
-        await this.sendEmailNotification(savedNotification, supporter, ticket);
+        // ดึงข้อมูล user และส่ง email
+        const user: UserData = await lastValueFrom(
+          this.userClient.send('user.find_one', { userId })
+            .pipe(
+              timeout(5000),
+              catchError(err => of(null))
+            )
+        );
+
+        if (user?.email) {
+          await this.sendEmailNotification(savedNotification, user, ticket);
+        }
       }
 
       // Emit event
       await this.kafkaService.emitNotificationCreated({
-        notificationCount: notifications.length,
-        ticketNo,
         type: NotificationType.NEW_TICKET,
-        timestamp: new Date(),
+        ticketNo,
+        supporterCount: notifications.length,
+        timestamp: new Date()
       });
 
       this.logger.log(`✅ Created ${notifications.length} new ticket notifications`);
-
-      return {
-        success: true,
-        data: notifications,
-        count: notifications.length,
-      };
+      return notifications;
     } catch (error) {
-      this.logger.error('❌ Error creating new ticket notification:', error.message);
-      return {
-        success: false,
-        message: error.message,
-      };
+      this.logger.error('Error creating new ticket notification:', error);
+      throw error;
     }
   }
 
   // ✅ สร้างการแจ้งเตือนการมอบหมายงาน (สำหรับ supporter)
   async createAssignmentNotification(ticketNo: string, assignedUserId: number) {
     try {
-      // Validate input
-      if (!ticketNo || !assignedUserId) {
-        throw new Error('ticketNo และ assignedUserId จำเป็น');
-      }
-
-      if (assignedUserId <= 0) {
-        throw new Error('assignedUserId ต้องมากกว่า 0');
-      }
-
-      // Get ticket info
-      const ticketResponse = await lastValueFrom(
-        this.ticketClient.send('ticket.find_by_no', { ticketNo }).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling ticket service:', error);
-            return of({ success: false });
-          })
-        )
+      // ดึงข้อมูล ticket
+      const ticket: TicketData = await lastValueFrom(
+        this.ticketClient.send('ticket.find_by_no', { ticket_no: ticketNo })
+          .pipe(timeout(5000))
       );
 
-      if (!ticketResponse.success || !ticketResponse.data) {
-        throw new NotFoundException(`ไม่พบ ticket หมายเลข ${ticketNo}`);
+      if (!ticket) {
+        throw new NotFoundException(`Ticket with ticket_no ${ticketNo} not found`);
       }
 
-      const ticket = ticketResponse.data;
-
-      // Get assigned user info from User Service
-      const userResponse = await lastValueFrom(
-        this.userClient.send('user.find_one', { id: assignedUserId }).pipe(
-          timeout(5000),
-          catchError(error => {
-            this.logger.error('Error calling user service:', error);
-            return of({ success: false });
-          })
-        )
+      // ดึงข้อมูล user ที่ได้รับมอบหมาย
+      const assignedUser: UserData = await lastValueFrom(
+        this.userClient.send('user.find_one', { userId: assignedUserId })
+          .pipe(timeout(5000))
       );
 
-      if (!userResponse.success || !userResponse.data) {
-        throw new NotFoundException(`ไม่พบผู้ใช้ ID ${assignedUserId}`);
-      }
-
-      const assignedUser = userResponse.data;
-
-      // Check if notification already exists
-      const existing = await this.notiRepo.findOne({
-        where: {
-          ticket_no: ticketNo,
-          user_id: assignedUserId,
-          notification_type: NotificationType.ASSIGNMENT,
-        },
-      });
-
-      if (existing) {
-        this.logger.log(`Assignment notification already exists for user ${assignedUserId}`);
-        return { success: true, data: existing, message: 'การแจ้งเตือนมีอยู่แล้ว' };
+      if (!assignedUser) {
+        throw new NotFoundException(`User with ID ${assignedUserId} not found`);
       }
 
       const notification = this.notiRepo.create({
         ticket_no: ticketNo,
         user_id: assignedUserId,
         notification_type: NotificationType.ASSIGNMENT,
-        title: `มอบหมายงาน: #${ticket.ticket_no}`,
-        message: `คุณได้รับมอบหมายงานใหม่: ${ticket.issue_description || 'ไม่มีหัวข้อ'}`,
+        title: `มอบหมายงาน: #${ticket.id}`,
+        message: `คุณได้รับมอบหมายงานใหม่: ${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}`,
         is_read: false,
-        email_sent: false,
-        create_date: new Date(),
+        email_sent: false
       });
 
       const savedNotification = await this.notiRepo.save(notification);
 
       // ส่ง email
-      await this.sendEmailNotification(savedNotification, assignedUser, ticket);
+      if (assignedUser.email) {
+        await this.sendEmailNotification(savedNotification, assignedUser, ticket);
+      }
 
       // Emit event
       await this.kafkaService.emitNotificationCreated({
         notificationId: savedNotification.id,
+        type: NotificationType.ASSIGNMENT,
         ticketNo,
         userId: assignedUserId,
-        type: NotificationType.ASSIGNMENT,
-        timestamp: new Date(),
+        timestamp: new Date()
       });
 
-      this.logger.log(`✅ Assignment notification created for user ${assignedUserId}`);
-
-      return {
-        success: true,
-        data: savedNotification,
-      };
+      this.logger.log(`✅ Created assignment notification for user ${assignedUserId}`);
+      return savedNotification;
     } catch (error) {
-      this.logger.error('❌ Error creating assignment notification:', error.message);
-      return {
-        success: false,
-        message: error.message,
-      };
+      this.logger.error('Error creating assignment notification:', error);
+      throw error;
     }
   }
 
   // ✅ ส่ง email notification
-  private async sendEmailNotification(notification: Notification, user: any, ticket: any) {
+  private async sendEmailNotification(
+    notification: Notification, 
+    user: UserData, 
+    ticket: TicketData, 
+    status?: StatusData
+  ) {
     try {
-      // Validate email
       if (!user?.email) {
         this.logger.warn('User email not found for notification:', notification.id);
         return false;
@@ -356,7 +328,7 @@ export class NotificationService implements OnModuleInit {
 
       switch (notification.notification_type) {
         case NotificationType.STATUS_CHANGE:
-          emailSent = await this.sendStatusChangeEmail(notification, user, ticket);
+          emailSent = await this.sendStatusChangeEmail(notification, user, ticket, status);
           break;
         case NotificationType.NEW_TICKET:
           emailSent = await this.sendNewTicketEmail(notification, user, ticket);
@@ -364,16 +336,13 @@ export class NotificationService implements OnModuleInit {
         case NotificationType.ASSIGNMENT:
           emailSent = await this.sendAssignmentEmail(notification, user, ticket);
           break;
-        default:
-          this.logger.warn(`Unknown notification type: ${notification.notification_type}`);
-          return false;
       }
 
       if (emailSent) {
         // อัพเดทสถานะการส่ง email
         await this.notiRepo.update(notification.id, {
           email_sent: true,
-          email_sent_at: new Date(),
+          email_sent_at: new Date()
         });
 
         // Emit email sent event
@@ -381,7 +350,7 @@ export class NotificationService implements OnModuleInit {
           notificationId: notification.id,
           email: user.email,
           type: notification.notification_type,
-          timestamp: new Date(),
+          timestamp: new Date()
         });
       }
 
@@ -393,9 +362,16 @@ export class NotificationService implements OnModuleInit {
   }
 
   // ✅ ส่งอีเมลการเปลี่ยนแปลงสถานะ
-  private async sendStatusChangeEmail(notification: Notification, user: any, ticket: any): Promise<boolean> {
+  private async sendStatusChangeEmail(
+    notification: Notification, 
+    user: UserData, 
+    ticket: TicketData, 
+    status?: StatusData
+  ): Promise<boolean> {
     try {
-      const subject = `[Ticket #${ticket.ticket_no}] อัพเดทสถานะ: ${ticket.issue_description || 'ไม่มีหัวข้อ'}`;
+      const subject = `[Ticket #${ticket.ticket_no}] อัพเดทสถานะ: ${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}`;
+      
+      const statusName = status?.name || 'ไม่ระบุ';
       
       const htmlContent = `
         <!DOCTYPE html>
@@ -409,7 +385,7 @@ export class NotificationService implements OnModuleInit {
             <h2 style="color: #2c3e50;">🎫 อัพเดทสถานะ Ticket</h2>
             
             <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-              <p><strong>เรียน:</strong> คุณ${user.username || user.email}</p>
+              <p><strong>เรียน:</strong> คุณ${user.username || user.create_by || user.email}</p>
               <p>ticket ของคุณได้รับการอัพเดทสถานะแล้ว</p>
             </div>
 
@@ -417,17 +393,17 @@ export class NotificationService implements OnModuleInit {
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold; width: 150px;">หมายเลขเรื่อง:</td>
-                  <td style="padding: 8px 0;">#${ticket.ticket_no}</td>
+                  <td style="padding: 8px 0;">#${ticket.id}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">หัวข้อ:</td>
-                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
+                  <td style="padding: 8px 0;">${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">สถานะใหม่:</td>
                   <td style="padding: 8px 0;">
                     <span style="color: #28a745; font-weight: bold; background-color: #d4edda; padding: 4px 8px; border-radius: 4px;">
-                      ${notification.message}
+                      ${statusName}
                     </span>
                   </td>
                 </tr>
@@ -476,7 +452,7 @@ export class NotificationService implements OnModuleInit {
   }
 
   // ✅ ส่งอีเมลเรื่องใหม่ (สำหรับ supporter)
-  private async sendNewTicketEmail(notification: Notification, user: any, ticket: any): Promise<boolean> {
+  private async sendNewTicketEmail(notification: Notification, user: UserData, ticket: TicketData): Promise<boolean> {
     try {
       const subject = `[New Ticket #${ticket.ticket_no}] เรื่องใหม่ต้องการการดำเนินการ`;
       
@@ -492,7 +468,7 @@ export class NotificationService implements OnModuleInit {
             <h2 style="color: #dc3545;">🆕 ticket ใหม่ต้องการการดำเนินการ</h2>
             
             <div style="background-color: #fff3cd; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;">
-              <p><strong>เรียน:</strong> คุณ${user.username || user.email}</p>
+              <p><strong>เรียน:</strong> คุณ${user.username || user.create_by || user.email}</p>
               <p>มี ticket ใหม่ที่ต้องการการดำเนินการ กรุณาตรวจสอบ</p>
             </div>
 
@@ -500,11 +476,15 @@ export class NotificationService implements OnModuleInit {
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold; width: 150px;">หมายเลขเรื่อง:</td>
-                  <td style="padding: 8px 0;">#${ticket.ticket_no}</td>
+                  <td style="padding: 8px 0;">#${ticket.id}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">หัวข้อ:</td>
-                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
+                  <td style="padding: 8px 0;">${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0; font-weight: bold;">รายละเอียด:</td>
+                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีรายละเอียด'}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">ผู้แจ้ง:</td>
@@ -512,7 +492,7 @@ export class NotificationService implements OnModuleInit {
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">วันที่แจ้ง:</td>
-                  <td style="padding: 8px 0;">${new Date().toLocaleDateString('th-TH')}</td>
+                  <td style="padding: 8px 0;">${ticket.create_date?.toLocaleDateString('th-TH') || new Date().toLocaleDateString('th-TH')}</td>
                 </tr>
               </table>
             </div>
@@ -558,7 +538,7 @@ export class NotificationService implements OnModuleInit {
   }
 
   // ✅ ส่งอีเมลการมอบหมายงาน
-  private async sendAssignmentEmail(notification: Notification, user: any, ticket: any): Promise<boolean> {
+  private async sendAssignmentEmail(notification: Notification, user: UserData, ticket: TicketData): Promise<boolean> {
     try {
       const subject = `[Assignment #${ticket.ticket_no}] คุณได้รับมอบหมายงานใหม่`;
       
@@ -574,7 +554,7 @@ export class NotificationService implements OnModuleInit {
             <h2 style="color: #6f42c1;">👤 คุณได้รับมอบหมายงานใหม่</h2>
             
             <div style="background-color: #e7e3ff; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6f42c1;">
-              <p><strong>เรียน:</strong> คุณ${user.username || user.email}</p>
+              <p><strong>เรียน:</strong> คุณ${user.username || user.create_by || user.email}</p>
               <p>คุณได้รับมอบหมายให้ดูแลเรื่องนี้ กรุณาดำเนินการ</p>
             </div>
 
@@ -582,11 +562,15 @@ export class NotificationService implements OnModuleInit {
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold; width: 150px;">หมายเลขเรื่อง:</td>
-                  <td style="padding: 8px 0;">#${ticket.ticket_no}</td>
+                  <td style="padding: 8px 0;">#${ticket.id}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">หัวข้อ:</td>
-                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
+                  <td style="padding: 8px 0;">${ticket.categories_id || ticket.issue_description || 'ไม่มีหัวข้อ'}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0; font-weight: bold;">รายละเอียด:</td>
+                  <td style="padding: 8px 0;">${ticket.issue_description || 'ไม่มีรายละเอียด'}</td>
                 </tr>
                 <tr>
                   <td style="padding: 8px 0; font-weight: bold;">ผู้แจ้ง:</td>
@@ -650,7 +634,6 @@ export class NotificationService implements OnModuleInit {
   // ✅ ดึงการแจ้งเตือนของผู้ใช้
   async getUserNotifications(userId: number, page: number = 1, limit: number = 20) {
     try {
-      // Validate input
       if (!userId || userId <= 0) {
         return { success: false, message: 'Invalid user ID' };
       }
@@ -662,7 +645,7 @@ export class NotificationService implements OnModuleInit {
         where: { user_id: userId },
         order: { create_date: 'DESC' },
         skip: (page - 1) * limit,
-        take: limit,
+        take: limit
       });
 
       return {
@@ -673,20 +656,19 @@ export class NotificationService implements OnModuleInit {
             total,
             page,
             limit,
-            totalPages: Math.ceil(total / limit),
-          },
-        },
+            totalPages: Math.ceil(total / limit)
+          }
+        }
       };
     } catch (error) {
-      this.logger.error('❌ Error getting user notifications:', error.message);
-      return { success: false, message: error.message };
+      this.logger.error('Error getting user notifications:', error);
+      throw error;
     }
   }
 
   // ✅ ทำเครื่องหมายว่าอ่านแล้ว
   async markAsRead(notificationId: number, userId: number) {
     try {
-      // Validate input
       if (!notificationId || notificationId <= 0) {
         return { success: false, message: 'Invalid notification ID' };
       }
@@ -696,48 +678,44 @@ export class NotificationService implements OnModuleInit {
       }
 
       const notification = await this.notiRepo.findOne({
-        where: { id: notificationId, user_id: userId },
+        where: { id: notificationId, user_id: userId }
       });
 
       if (!notification) {
         return { success: false, message: 'Notification not found or access denied' };
       }
 
-      // ถ้าอ่านแล้วก็ return เลย
       if (notification.is_read) {
         return { success: true, data: notification, message: 'Already read' };
       }
 
-      // อัพเดทสถานะ
       await this.notiRepo.update(notificationId, {
         is_read: true,
-        read_at: new Date(),
+        read_at: new Date()
       });
 
       const updatedNotification = await this.notiRepo.findOne({
-        where: { id: notificationId },
+        where: { id: notificationId }
       });
 
       // Emit event
       await this.kafkaService.emitNotificationRead({
         notificationId,
         userId,
-        timestamp: new Date(),
+        timestamp: new Date()
       });
 
       this.logger.log(`✅ Notification marked as read: ${notificationId}`);
-
       return { success: true, data: updatedNotification };
     } catch (error) {
-      this.logger.error('❌ Error marking notification as read:', error.message);
-      return { success: false, message: error.message };
+      this.logger.error('Error marking notification as read:', error);
+      throw error;
     }
   }
 
   // ✅ ทำเครื่องหมายทั้งหมดว่าอ่านแล้ว
   async markAllAsRead(userId: number) {
     try {
-      // Validate input
       if (!userId || userId <= 0) {
         return { success: false, message: 'Invalid user ID' };
       }
@@ -748,13 +726,12 @@ export class NotificationService implements OnModuleInit {
       );
 
       const affectedRows = result.affected || 0;
-
       this.logger.log(`✅ Marked ${affectedRows} notifications as read for user ${userId}`);
 
       return { success: true, data: { updated: affectedRows } };
     } catch (error) {
-      this.logger.error('❌ Error marking all notifications as read:', error.message);
-      return { success: false, message: error.message };
+      this.logger.error('Error marking all notifications as read:', error);
+      throw error;
     }
   }
 
@@ -766,12 +743,12 @@ export class NotificationService implements OnModuleInit {
       }
 
       const count = await this.notiRepo.count({
-        where: { user_id: userId, is_read: false },
+        where: { user_id: userId, is_read: false }
       });
 
       return { success: true, data: { count } };
     } catch (error) {
-      this.logger.error('❌ Error getting unread count:', error.message);
+      this.logger.error('Error getting unread count:', error);
       return { success: false, message: error.message };
     }
   }
@@ -779,7 +756,6 @@ export class NotificationService implements OnModuleInit {
   // ✅ ดึงการแจ้งเตือนตามประเภท
   async getNotificationsByType(userId: number, type: NotificationType, page: number = 1, limit: number = 20) {
     try {
-      // Validate input
       if (!userId || userId <= 0) {
         return { success: false, message: 'Invalid user ID' };
       }
@@ -795,7 +771,7 @@ export class NotificationService implements OnModuleInit {
         where: { user_id: userId, notification_type: type },
         order: { create_date: 'DESC' },
         skip: (page - 1) * limit,
-        take: limit,
+        take: limit
       });
 
       return {
@@ -806,20 +782,63 @@ export class NotificationService implements OnModuleInit {
             total,
             page,
             limit,
-            totalPages: Math.ceil(total / limit),
-          },
-        },
+            totalPages: Math.ceil(total / limit)
+          }
+        }
       };
     } catch (error) {
-      this.logger.error('❌ Error getting notifications by type:', error.message);
-      return { success: false, message: error.message };
+      this.logger.error('Error getting notifications by type:', error);
+      throw error;
+    }
+  }
+
+  // ✅ ตรวจสอบว่า user เป็น supporter หรือไม่
+  async isUserSupporter(userId: number): Promise<boolean> {
+    try {
+      const supporterRoleIds = [5, 6, 7, 8, 9, 10, 13];
+      
+      const isSupporter: boolean = await lastValueFrom(
+        this.userClient.send('user.check_supporter_role', { userId, roleIds: supporterRoleIds })
+          .pipe(
+            timeout(5000),
+            catchError(err => {
+              this.logger.error('Error checking supporter role:', err);
+              return of(false);
+            })
+          )
+      );
+
+      return isSupporter;
+    } catch (error) {
+      this.logger.error('Error checking if user is supporter:', error);
+      return false;
+    }
+  }
+
+  // ✅ ตรวจสอบว่า user สามารถเข้าถึง ticket ได้หรือไม่
+  async canAccessTicket(userId: number, ticketNo: string): Promise<boolean> {
+    try {
+      const canAccess: boolean = await lastValueFrom(
+        this.ticketClient.send('ticket.check_access', { userId, ticketNo })
+          .pipe(
+            timeout(5000),
+            catchError(err => {
+              this.logger.error('Error checking ticket access:', err);
+              return of(false);
+            })
+          )
+      );
+
+      return canAccess;
+    } catch (error) {
+      this.logger.error('Error checking ticket access:', error);
+      return false;
     }
   }
 
   // ✅ ดึงการแจ้งเตือนของ ticket
   async getTicketNotifications(ticketNo: string, page: number = 1, limit: number = 20) {
     try {
-      // Validate input
       if (!ticketNo) {
         return { success: false, message: 'ticketNo is required' };
       }
@@ -831,7 +850,7 @@ export class NotificationService implements OnModuleInit {
         where: { ticket_no: ticketNo },
         order: { create_date: 'DESC' },
         skip: (page - 1) * limit,
-        take: limit,
+        take: limit
       });
 
       return {
@@ -842,13 +861,80 @@ export class NotificationService implements OnModuleInit {
             total,
             page,
             limit,
-            totalPages: Math.ceil(total / limit),
-          },
-        },
+            totalPages: Math.ceil(total / limit)
+          }
+        }
       };
     } catch (error) {
-      this.logger.error('❌ Error getting ticket notifications:', error.message);
-      return { success: false, message: error.message };
+      this.logger.error('Error getting ticket notifications:', error);
+      throw error;
+    }
+  }
+
+  // ✅ ส่งการแจ้งเตือนให้ผู้ที่ได้รับมอบหมายทั้งหมด
+  async notifyAllAssignees(ticketNo: string, notificationType: NotificationType, customMessage?: string) {
+    try {
+      const ticket: TicketData = await lastValueFrom(
+        this.ticketClient.send('ticket.find_by_no', { ticket_no: ticketNo })
+          .pipe(timeout(5000))
+      );
+
+      if (!ticket) {
+        throw new NotFoundException(`Ticket with number ${ticketNo} not found`);
+      }
+
+      const assigneeIds: number[] = await lastValueFrom(
+        this.ticketClient.send('ticket.get_assignees', { ticketId: ticket.id })
+          .pipe(
+            timeout(5000),
+            catchError(err => {
+              this.logger.error('Error getting assignees:', err);
+              return of([]);
+            })
+          )
+      );
+
+      if (assigneeIds.length === 0) {
+        this.logger.warn(`No assignees found for ticket ${ticketNo}`);
+        return [];
+      }
+
+      const notifications: Notification[] = [];
+
+      for (const assigneeId of assigneeIds) {
+        const notification = this.notiRepo.create({
+          ticket_no: ticketNo,
+          user_id: assigneeId,
+          notification_type: notificationType,
+          title: `อัพเดท: ${ticket.ticket_no}`,
+          message: customMessage || `มีการอัพเดทในเรื่องที่คุณได้รับมอบหมาย`,
+          is_read: false,
+          email_sent: false,
+          create_date: new Date()
+        });
+
+        const savedNotification = await this.notiRepo.save(notification);
+        notifications.push(savedNotification);
+
+        // ดึงข้อมูล user และส่ง email
+        const user: UserData = await lastValueFrom(
+          this.userClient.send('user.find_one', { userId: assigneeId })
+            .pipe(
+              timeout(5000),
+              catchError(err => of(null))
+            )
+        );
+
+        if (user?.email) {
+          await this.sendEmailNotification(savedNotification, user, ticket);
+        }
+      }
+
+      this.logger.log(`✅ Notified ${notifications.length} assignees for ticket ${ticketNo}`);
+      return notifications;
+    } catch (error) {
+      this.logger.error('Error notifying all assignees:', error);
+      throw error;
     }
   }
 
@@ -870,13 +956,12 @@ export class NotificationService implements OnModuleInit {
         .execute();
 
       const deletedCount = result.affected || 0;
-
       this.logger.log(`✅ Deleted ${deletedCount} old notifications`);
 
       return { success: true, data: { deleted: deletedCount } };
     } catch (error) {
-      this.logger.error('❌ Error deleting old notifications:', error.message);
-      return { success: false, message: error.message };
+      this.logger.error('Error deleting old notifications:', error);
+      throw error;
     }
   }
 
@@ -885,16 +970,15 @@ export class NotificationService implements OnModuleInit {
     try {
       const notification = this.notiRepo.create({
         ...createNotificationDto,
-        create_date: new Date(),
+        create_date: new Date()
       });
 
       const saved = await this.notiRepo.save(notification);
-
       this.logger.log(`✅ Notification created: ${saved.id}`);
 
       return { success: true, data: saved };
     } catch (error) {
-      this.logger.error('❌ Error creating notification:', error.message);
+      this.logger.error('Error creating notification:', error);
       return { success: false, message: error.message };
     }
   }
@@ -903,12 +987,12 @@ export class NotificationService implements OnModuleInit {
     try {
       const notifications = await this.notiRepo.find({
         order: { create_date: 'DESC' },
-        take: 100, // Limit for performance
+        take: 100
       });
 
       return { success: true, data: notifications };
     } catch (error) {
-      this.logger.error('❌ Error finding all notifications:', error.message);
+      this.logger.error('Error finding all notifications:', error);
       return { success: false, message: error.message };
     }
   }
@@ -924,10 +1008,10 @@ export class NotificationService implements OnModuleInit {
       return {
         success: !!notification,
         data: notification,
-        message: notification ? 'Found' : 'Not found',
+        message: notification ? 'Found' : 'Not found'
       };
     } catch (error) {
-      this.logger.error('❌ Error finding notification:', error.message);
+      this.logger.error('Error finding notification:', error);
       return { success: false, message: error.message };
     }
   }
@@ -945,16 +1029,15 @@ export class NotificationService implements OnModuleInit {
 
       await this.notiRepo.update(id, {
         ...updateNotificationDto,
-        update_date: new Date(),
+        update_date: new Date()
       });
 
       const updated = await this.findOne(id);
-
       this.logger.log(`✅ Notification updated: ${id}`);
 
       return updated;
     } catch (error) {
-      this.logger.error('❌ Error updating notification:', error.message);
+      this.logger.error('Error updating notification:', error);
       return { success: false, message: error.message };
     }
   }
@@ -977,11 +1060,33 @@ export class NotificationService implements OnModuleInit {
 
       return {
         success: affectedRows > 0,
-        message: affectedRows > 0 ? 'Deleted successfully' : 'No records deleted',
+        message: affectedRows > 0 ? 'Deleted successfully' : 'No records deleted'
       };
     } catch (error) {
-      this.logger.error('❌ Error removing notification:', error.message);
+      this.logger.error('Error removing notification:', error);
       return { success: false, message: error.message };
+    }
+  }
+
+  private async fetchUserData(userId: number): Promise<UserData | null> {
+    try {
+      this.logger.log(`Fetching user data for user_id: ${userId}`);
+      
+      const userObservable = this.userClient.send('user_find_one', { userId }).pipe(
+        timeout(5000), // Timeout after 5 seconds
+        catchError(error => {
+          this.logger.error(`Error fetching user data for user_id ${userId}:`, error);
+          return of(null);
+        })
+      );
+
+      const user = await lastValueFrom(userObservable);
+
+      this.logger.log(`Fetched user data: ${JSON.stringify(user)}`);
+      return user;
+    } catch (error) {
+      this.logger.error(`Unexpected error in fetchUserData:`, error);
+      return null;
     }
   }
 }

@@ -8,38 +8,39 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export class CustomerController {
   constructor(private readonly customerService: CustomerService) {}
 
-  @MessagePattern('customer')
-  async create(@Payload() message: any) {
-    const { createCustomerDto, userId } = message.value;
-    return this.customerService.create(createCustomerDto, userId);
+  @MessagePattern('customer-create')
+  async create(@Payload() data: { createCustomerDto: any, userId: number}) {
+    return this.customerService.create(data.createCustomerDto, data.userId);
   }
 
-  @MessagePattern('customer_find_all')
+  @MessagePattern('customer-find-all')
   async findAll() {
     return this.customerService.findAll();
   }
 
-  @MessagePattern('customer_find_my')
+  @MessagePattern('customer-find-by-user')
   async findMyCustomers(@Payload() message: any) {
     const { userId } = message.value;
     return this.customerService.findCustomersByUserId(userId);
   }
 
-  @MessagePattern('customer_find_one')
-  async findOne(@Payload() message: any) {
-    const { id } = message.value;
-    return this.customerService.findOne(id);
+  @MessagePattern('customer-find-one')
+  async findOneCustomer(@Payload() data: { id: number }) {
+    return this.customerService.findOne(data.id);
   }
 
-  @MessagePattern('customer_update')
-  async update(@Payload() message: any) {
-    const { id, updateCustomerDto, userId } = message.value;
-    return this.customerService.update(id, updateCustomerDto, userId);
+  @MessagePattern('customer-update')
+  async updateCustomer(@Payload() data: { id: number; updateCustomerDto: any; userId: number }) {
+    return this.customerService.update(data.id, data.updateCustomerDto, data.userId);
   }
 
-  @MessagePattern('customer_remove')
-  async remove(@Payload() message: any) {
-    const { id } = message.value;
-    return this.customerService.remove(id);
+  @MessagePattern('customer-remove')
+  async removeCustomer(@Payload() data: { id: number }) {
+    return this.customerService.remove(data.id);
+  }
+
+  @MessagePattern('customer-find-by-user')
+  async findByUserId(@Payload() data: { userId: number }) {
+    return this.customerService.findCustomersByUserId(data.userId);
   }
 }

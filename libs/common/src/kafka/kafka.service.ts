@@ -13,7 +13,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   constructor(private configService: ConfigService) {
     this.kafka = new Kafka({
       clientId: 'auth-service',
-      brokers: [this.configService.get('KAFKA_BROKERS', 'localhost:9092')],
+      brokers: [this.configService.get('KAFKA_BROKERS', 'kafka:29092')],
       retry: {
         initialRetryTime: 100,
         retries: 8,

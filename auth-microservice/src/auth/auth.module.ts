@@ -31,7 +31,7 @@ import { KafkaModule } from '../libs/common/kafka/kafka.module';
           options: {
             client: {
               clientId: 'user-service',
-              brokers: [configService.get('KAFKA_BROKERS', 'localhost:9092')],
+              brokers: [configService.get('KAFKA_BROKERS', 'kafka:29092')],
             },
             consumer: {
               groupId: 'user-consumer',
